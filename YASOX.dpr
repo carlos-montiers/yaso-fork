@@ -17628,7 +17628,6 @@ A---B-
               BoxConfiguration, NewBoxConfiguration:PBoxConfiguration;
               BoxConfigurationCopy:TBoxConfiguration;
               DestinationQueue:PQueue;
-              S:String;
               //oPlayerPos:Integer; oBoard:TBoard; oBoxPos:TBoxSquares;
           begin // generates successor game-states for all nodes on the queue belonging to the specified span
             Result:=False;
