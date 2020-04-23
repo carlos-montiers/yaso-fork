@@ -1971,6 +1971,11 @@ begin
   else Result:=High(StopTimeMS__)-StartTimeMS__+StopTimeMS__+1; {clock wrap around; assume it only wrapped around once}
 end;
 
+function  CalculateElapsedTimeS(StartTimeMS__,StopTimeMS__:TTimeMS):TTimeMS;
+begin
+  Result:=(CalculateElapsedTimeMS(StartTimeMS__,StopTimeMS__)+500) div 1000
+end;
+
 function  CloseHandle( var Handle__ : THandle ) : Boolean;
 begin // closes a Windows handle; Windows raises an exception if the handle is
       // invalid, hence the 'try/except' wrapper to catch that situation;
@@ -11143,7 +11148,7 @@ begin
                       Optimizer.SearchResultStatusText
                       {$IFDEF CONSOLE_APPLICATION}
                         {$IFDEF WINDOWS}
-                          +' Time: '+IntToStr((CalculateElapsedTimeMS(Solver.StartTimeMS,GetTimeMS)+500) div 1000)
+                          +' Time: '+IntToStr(CalculateElapsedTimeS(Solver.StartTimeMS,GetTimeMS))
                         {$ENDIF}
                       {$ELSE}
                         +Optimizer.SearchStateStatusText
@@ -12881,7 +12886,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                                  Positions.BestPosition.PushCount,
                                  RIGHT_PAREN
                                  {$IFDEF WINDOWS}
-                                   ,' Time: ',(CalculateElapsedTimeMS(Solver.StartTimeMS,GetTimeMS)+500) div 1000
+                                   ,' Time: ',CalculateElapsedTimeS(Solver.StartTimeMS,GetTimeMS)
                                  {$ENDIF}
                                 );
                        {$ELSE}
@@ -13510,7 +13515,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
 
         SetPosition(nil); // go back to the start of the game
 
-        //Writeln('Time: ',CalculateElapsedTimeMS(StartTimeMS,GetTimeMS)); Readln;
+        //Writeln('Time: ',CalculateElapsedTimeS(StartTimeMS,GetTimeMS)); Readln;
       end; // Optimize.Search.RearrangementOptimization.SymmetryOptimization
 
     begin // RearrangementOptimization
@@ -13545,7 +13550,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
          end;
       //Optimizer.TimeMS:=CalculateElapsedTimeMS(StartTimeMS,GetTimeMS);
 
-      // Write('Rearrangement: ',Result,' Time: ',CalculateElapsedTimeMS(StartTimeMS,GetTimeMS)); Readln;
+      // Write('Rearrangement: ',Result,' Time: ',CalculateElapsedTimeS(StartTimeMS,GetTimeMS)); Readln;
     end; // Optimize.Search.RearrangementOptimization
 
 //  function  SearchBackwards(PullBoxNo__:Integer; PullDirection__:TDirection; Depth__,BoxCountDown__:Integer; SuccessorPosition__:PPosition):Boolean; forward;
@@ -13718,7 +13723,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                                 Writeln(SearchStatePromptText,
                                         'Pushes: ',Solver.PushCount div ONE_MILLION,' million Positions: ',Positions.Count,'+',Positions.SearchStatistics.DroppedCount
                                         {$IFDEF WINDOWS}
-                                          ,' Time: ',(CalculateElapsedTimeMS(Solver.StartTimeMS,GetTimeMS)+500) div 1000
+                                          ,' Time: ',CalculateElapsedTimeS(Solver.StartTimeMS,GetTimeMS)
                                         {$ENDIF}
                                        );
                               {$ENDIF}
@@ -13802,7 +13807,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                                Writeln(SearchStatePromptText,
                                        'Pushes: ',Solver.PushCount div ONE_MILLION,' million Positions: ',Positions.Count,'+',Positions.SearchStatistics.DroppedCount
                                        {$IFDEF WINDOWS}
-                                         ,' Time: ',(CalculateElapsedTimeMS(Solver.StartTimeMS,GetTimeMS)+500) div 1000
+                                         ,' Time: ',CalculateElapsedTimeS(Solver.StartTimeMS,GetTimeMS)
                                        {$ENDIF}
                                       );
                              {$ENDIF}
@@ -14282,7 +14287,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                                                    'Pushes: ',Solver.PushCount div ONE_MILLION,' million Positions: ',YASO.Positions.Count,'+',YASO.Positions.SearchStatistics.DroppedCount,
                                                    ' Open: ',YASO.Positions.OpenPositions.Count
                                                    {$IFDEF WINDOWS}
-                                                     ,' Time: ',(CalculateElapsedTimeMS(Solver.StartTimeMS,GetTimeMS)+500) div 1000
+                                                     ,' Time: ',CalculateElapsedTimeS(Solver.StartTimeMS,GetTimeMS)
                                                    {$ENDIF}
                                                    );
                                             end;
@@ -14689,7 +14694,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                                                  'Pushes: ',Solver.PushCount div ONE_MILLION,' million Positions: ',YASO.Positions.Count,'+',YASO.Positions.SearchStatistics.DroppedCount,
                                                  ' Open: ',YASO.Positions.OpenPositions.Count
                                                  {$IFDEF WINDOWS}
-                                                   ,' Time: ',(CalculateElapsedTimeMS(Solver.StartTimeMS,GetTimeMS)+500) div 1000
+                                                   ,' Time: ',CalculateElapsedTimeS(Solver.StartTimeMS,GetTimeMS)
                                                  {$ENDIF}
                                                  );
                                           end;
@@ -14888,7 +14893,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                           'Pushes: ',Solver.PushCount div ONE_MILLION,' million Positions: ',YASO.Positions.Count,'+',YASO.Positions.SearchStatistics.DroppedCount,
                           ' Open: ',YASO.Positions.OpenPositions.Count
                           {$IFDEF WINDOWS}
-                            ,' Time: ',(CalculateElapsedTimeMS(Solver.StartTimeMS,GetTimeMS)+500) div 1000
+                            ,' Time: ',CalculateElapsedTimeS(Solver.StartTimeMS,GetTimeMS)
                           {$ENDIF}
                           );
                     end;
@@ -15766,7 +15771,7 @@ A---B-
                                               Writeln(SearchStatePromptText,
                                                       Optimizer.SearchStateStatusText
                                                      {$IFDEF WINDOWS}
-                                                      ,' Time: ',(CalculateElapsedTimeMS(Solver.StartTimeMS,GetTimeMS)+500) div ONE_THOUSAND
+                                                      ,' Time: ',CalculateElapsedTimeS(Solver.StartTimeMS,GetTimeMS)
                                                      {$ENDIF}
                                                     );
                                             {$ELSE}
@@ -16072,7 +16077,7 @@ A---B-
              end;
 
           {$IFDEF CONSOLE_APPLICATION}
-            Writeln(Reader.LevelCount,'. Box configurations: ',Tree.Count,' Positions: ',Positions.Count,' Time: ',CalculateElapsedTimeMS(StartTimeMS,GetTimeMS){,' Freeze-test deadlocks: ',Positions.SearchStatistics.FreezeTestDeadlockCount});
+            Writeln(Reader.LevelCount,'. Box configurations: ',Tree.Count,' Positions: ',Positions.Count,' Time: ',CalculateElapsedTimeS(StartTimeMS,GetTimeMS){,' Freeze-test deadlocks: ',Positions.SearchStatistics.FreezeTestDeadlockCount});
             //BTRedBlackTreeCheck(Tree);
             //Readln;
           {$ENDIF}
@@ -17002,7 +17007,7 @@ A---B-
              if i<BoxConfigurations.Count then Inc(i)
               else i:=0;
               end;
-            t:=CalculateElapsedTimeMS(t,GetTimeMS);
+            t:=CalculateElapsedTimeS(t,GetTimeMS);
             Msg(IntToStr(t),'Time');
 }
             {$WARNINGS OFF}                                                     // precondition checks
@@ -17585,7 +17590,7 @@ A---B-
                                    SLASH,
                                    Solver.PushCount div ONE_MILLION,' million'
                                    {$IFDEF WINDOWS}
-                                     ,' Time: ',(CalculateElapsedTimeMS(Solver.StartTimeMS,GetTimeMS)+500) div ONE_THOUSAND
+                                     ,' Time: ',CalculateElapsedTimeS(Solver.StartTimeMS,GetTimeMS)
                                    {$ENDIF}
                                   );
                         {$ELSE}
@@ -17732,7 +17737,7 @@ A---B-
                                              //            CalculateTotalPushCount div ONE_MILLION,' million'
                                              //            //,SPACE,Cardinal(Queues.MemoryBlock.Memory)+Queues.MemoryBlock.ByteSize-Cardinal(Queues.MovesQueue.Top)
                                              //            {$IFDEF WINDOWS}
-                                             //              ,' Time: ',(CalculateElapsedTimeMS(Solver.StartTimeMS,GetTimeMS)+500) div 1000
+                                             //              ,' Time: ',CalculateElapsedTimeS(Solver.StartTimeMS,GetTimeMS)
                                              //            {$ENDIF}
                                              //            );
                                              //   {$ELSE}
@@ -18641,7 +18646,7 @@ A---B-
                                             //            CalculateTotalPushCount div ONE_MILLION,' million'
                                             //            //,SPACE,Cardinal(Queues.PushesQueue.Top)-Cardinal(Queues.MemoryBlock.Memory)
                                             //            {$IFDEF WINDOWS}
-                                            //              ,' Time: ',(CalculateElapsedTimeMS(Solver.StartTimeMS,GetTimeMS)+500) div 1000
+                                            //              ,' Time: ',CalculateElapsedTimeS(Solver.StartTimeMS,GetTimeMS)
                                             //            {$ENDIF}
                                             //            );
                                             //   {$ELSE}
@@ -18931,7 +18936,7 @@ A---B-
                                  CalculateTotalPushCount div ONE_MILLION,
                                  ' million'
                                  {$IFDEF WINDOWS}
-                                   ,' Time: ',(CalculateElapsedTimeMS(Solver.StartTimeMS,GetTimeMS)+500) div ONE_THOUSAND
+                                   ,' Time: ',CalculateElapsedTimeS(Solver.StartTimeMS,GetTimeMS)
                                  {$ENDIF}
                                 );
                          LastStatusMoveCount:=TotalMoveCount;
@@ -19003,7 +19008,7 @@ A---B-
            finally Result:=Finalize(Result);
            end;
            {$IFDEF CONSOLE_APPLICATION}
-             Writeln('Time: ',CalculateElapsedTimeMS(Solver.StartTimeMS,GetTimeMS),' Box configurations: ',Optimizer.V.BoxConfigurations.Count);
+             Writeln('Time: ',CalculateElapsedTimeS(Solver.StartTimeMS,GetTimeMS),' Box configurations: ',Optimizer.V.BoxConfigurations.Count);
            {$ENDIF}
            end;
       end; // Optimize.Search.VicinitySearch.Search
