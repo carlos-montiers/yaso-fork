@@ -7585,7 +7585,9 @@ XX              of them is a box on a non-goal square. The non-wall
                                         IsALegalPush(BoxNo,Direction,SuccessorDepth+DepthOffset) then begin
 
                                         if ( DeadlockSetCandidate__.SquareColors[ BoxToSquareNo ] = scWhite ) or  {'True': the box escapes from the fenced-in area}
-                                           ( SuccessorDepth = MAX_SEARCH_DEPTH ) then begin {'True': the maximum search depth has been reached; remove the box and check if the remaining boxes are deadlocked}                                           Result:=DeadlockSetCandidate__.EscapedBoxesCountDown>1; {'True': continue the search, i.e., the candidate is considered a deadlock until it has been proved that enough boxes can escape}                                           {jump back to the point where the box began its current
+                                           ( SuccessorDepth = MAX_SEARCH_DEPTH ) then begin {'True': the maximum search depth has been reached; remove the box and check if the remaining boxes are deadlocked}
+                                           Result:=DeadlockSetCandidate__.EscapedBoxesCountDown>1; {'True': continue the search, i.e., the candidate is considered a deadlock until it has been proved that enough boxes can escape}
+                                           {jump back to the point where the box began its current
                                             sequence of moves toward the escape square; remove the
                                             box at that point and then continue the search with the
                                             remaining boxes on the board;
