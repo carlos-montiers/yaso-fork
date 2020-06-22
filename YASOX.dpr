@@ -589,11 +589,9 @@ const
   TEXT_LEVEL_HAS_TOO_MANY_ROWS
                            = 'Level has too many rows';
   TEXT_LEVEL_HAS_NO_PLAYER = 'Level has no player';
-  TEXT_LEVEL_HAS_NOT_THE_SAME_NUMBER_OF_BOXES_AND_GOALS
-                           = 'Level has not the same number of boxes and goals';
+  TEXT_LEVEL_DOES_NOT_HAVE_THE_SAME_NUMBER_OF_BOXES_AND_GOALS
+                           = 'Level does not have the same number of boxes and goals';
   TEXT_LEVEL_SOLVED        = 'Level solved';
-  TEXT_LEVEL_SOLVED_MAY_NOT_BE_OPTIMAL
-                           = TEXT_LEVEL_SOLVED+' (solution may not be optimal)';
   TEXT_LEVEL_UNSOLVABLE    = 'Level not solvable';
   TEXT_LEVEL_UNSOLVED      = 'Level not solved';
   TEXT_MEBI_BYTES          = 'MiB';
@@ -616,6 +614,8 @@ const
                               'Terminated by user');
   TEXT_PRESS_ENTER         = 'Press [Enter]';
   TEXT_PUSHES              = 'pushes';
+  TEXT_PUSH_OPTIMAL_SOLUTION
+                           = 'push-optimal solution';
   TEXT_PUSH_PULL           : array[Boolean] of String = ('Push','Pull');
   TEXT_RUNTIME_ERROR       = 'Run-time error';
   TEXT_SAVE_POSITIONS_TO_DISK
@@ -623,13 +623,13 @@ const
   TEXT_SEARCH_STATUS_BOX_PERMUTATIONS
                            = '-box permutations: Pushes ';
   TEXT_SEARCH_STATUS_GLOBAL_OPTIMIZATION
-                           = '  (Global optimization: Transposition table: ';
+                           = '(Global optimization: Transposition table: ';
   TEXT_SEARCH_STATUS_REARRANGEMENT_OPTIMIZATION
-                           = '  (Rearrangement optimization: Pushes ';
+                           = '(Rearrangement optimization: Pushes ';
   TEXT_SEARCH_STATUS_VICINITY_1
-                           = '  (Vicinity search: Positions: ';
+                           = '(Vicinity search: Positions: ';
   TEXT_SEARCH_STATUS_VICINITY_2
-                           = '  (Vicinity search: Position queue: ';
+                           = '(Vicinity search: Position queue: ';
   TEXT_SEARCH_STATUS_VICINITY_3
                            = 'Vicinity search (';
   TEXT_SEARCH_STATUS_VICINITY_4
@@ -10057,7 +10057,7 @@ var BoxNo:Integer; StartTimeMS:TTimeMS;
             end;
         if (Game.BoxCount<>Game.GoalCount) and (LoopCount=0) and Result then begin
            PluginResult__:=prInvalidLevel;
-           ErrorText__:=TEXT_LEVEL_HAS_NOT_THE_SAME_NUMBER_OF_BOXES_AND_GOALS;
+           ErrorText__:=TEXT_LEVEL_DOES_NOT_HAVE_THE_SAME_NUMBER_OF_BOXES_AND_GOALS;
            Result:=False;
            end;
         Inc(LoopCount);
@@ -11135,7 +11135,7 @@ begin
      EnterCriticalSection(Optimizer.Threads.CriticalSection);
      //AcquireSpinLock(Optimizer.Threads.SpinLock);
      try
-       Optimizer.SearchResultStatusText:=OptimizerMetricsAsText(Positions.BestPosition)+SPACE+SPACE+
+       Optimizer.SearchResultStatusText:=OptimizerMetricsAsText(Positions.BestPosition)+NL+
                                          LEFT_PAREN+OptimizerImprovementAsText(Positions.BestPosition)+RIGHT_PAREN;
      finally LeaveCriticalSection(Optimizer.Threads.CriticalSection);
              //ReleaseSpinLock(Optimizer.Threads.SpinLock);
@@ -11151,6 +11151,7 @@ begin
                           +' Time: '+IntToStr(CalculateElapsedTimeS(Solver.StartTimeMS,GetTimeMS))
                         {$ENDIF}
                       {$ELSE}
+                        +NL
                         +Optimizer.SearchStateStatusText
                       {$ENDIF}
                       {+' (Positions: '+IntToStr(Positions.Count+Positions.SearchStatistics.DroppedCount)+' Open: '+IntToStr(Positions.OpenPositions.Count)+RIGHT_PAREN}
@@ -12883,15 +12884,14 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                                  TEXT_SEARCH_STATUS_REARRANGEMENT_OPTIMIZATION,
                                  CurrentPosition^.PushCount,
                                  LAZY_COLON,
-                                 Positions.BestPosition.PushCount,
-                                 RIGHT_PAREN
+                                 Positions.BestPosition.PushCount
                                  {$IFDEF WINDOWS}
                                    ,' Time: ',CalculateElapsedTimeS(Solver.StartTimeMS,GetTimeMS)
                                  {$ENDIF}
                                 );
                        {$ELSE}
-                         Optimizer.SearchStateStatusText:=TEXT_SEARCH_STATUS_REARRANGEMENT_OPTIMIZATION+IntToStr(CurrentPosition^.PushCount)+LAZY_COLON+IntToStr(Positions.BestPosition^.PushCount)+RIGHT_PAREN;
-                         SetSokobanStatusText(Optimizer.SearchResultStatusText+Optimizer.SearchStateStatusText);
+                         Optimizer.SearchStateStatusText:=TEXT_SEARCH_STATUS_REARRANGEMENT_OPTIMIZATION+IntToStr(CurrentPosition^.PushCount)+LAZY_COLON+IntToStr(Positions.BestPosition^.PushCount);
+                         SetSokobanStatusText(Optimizer.SearchResultStatusText+NL+Optimizer.SearchStateStatusText);
                        {$ENDIF}
 
                        TimeCheck;
@@ -14441,7 +14441,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
         //Result:=False; exit;
 
         {$IFDEF PLUGIN_MODULE}
-          Optimizer.SearchStateStatusText:=SPACE+SPACE+LEFT_PAREN+IntToStr(BoxSet__.Count)+TEXT_SEARCH_STATUS_BOX_PERMUTATIONS+IntToStr(SliceStart__^.PushCount)+LAZY_COLON+IntToStr(SliceEnd__^.PushCount)+RIGHT_PAREN;
+          Optimizer.SearchStateStatusText:=IntToStr(BoxSet__.Count)+TEXT_SEARCH_STATUS_BOX_PERMUTATIONS+IntToStr(SliceStart__^.PushCount)+LAZY_COLON+IntToStr(SliceEnd__^.PushCount);
           ShowStatus;
         {$ENDIF}
 
@@ -14700,8 +14700,8 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                                           end;
                                        {else Write(PERIOD)};
                                      {$ELSE}
-                                       Optimizer.SearchStateStatusText:=TEXT_SEARCH_STATUS_GLOBAL_OPTIMIZATION+IntToStr((YASO.Positions.Count*100) div Optimizer.PositionCapacity)+'%)';
-                                       SetSokobanStatusText(Optimizer.SearchResultStatusText+Optimizer.SearchStateStatusText);
+                                       Optimizer.SearchStateStatusText:=TEXT_SEARCH_STATUS_GLOBAL_OPTIMIZATION+IntToStr((YASO.Positions.Count*100) div Optimizer.PositionCapacity)+'%';
+                                       SetSokobanStatusText(Optimizer.SearchResultStatusText+NL+Optimizer.SearchStateStatusText);
                                      {$ENDIF}
 
                                      TimeCheck;
@@ -15750,7 +15750,7 @@ A---B-
                                             //AcquireSpinLock(Optimizer.Threads.SpinLock);
                                             try
                                               Optimizer.SearchStateStatusText:={$IFDEF PLUGIN_MODULE}
-                                                                                 '  ('+
+                                                                                 //'('+
                                                                                  VicinitySettingsAsText+
                                                                                {$ENDIF}
                                                                                TEXT_SEARCH_STATUS_VICINITY_3+
@@ -15759,7 +15759,7 @@ A---B-
                                                                                IntToStr(Max(1,ThreadData__.BasePosition^.Position.PushCount))+SLASH+IntToStr(Positions.BestPosition^.PushCount)+': '+
                                                                                IntToStr({Tree.Count}Item.Key)
                                                                                {$IFDEF PLUGIN_MODULE}
-                                                                                 +RIGHT_PAREN
+                                                                                 //+RIGHT_PAREN
                                                                                {$ENDIF}
                                                                                ;
                                             finally
@@ -15775,7 +15775,7 @@ A---B-
                                                      {$ENDIF}
                                                     );
                                             {$ELSE}
-                                              SetSokobanStatusText(Optimizer.SearchResultStatusText+Optimizer.SearchStateStatusText);
+                                              SetSokobanStatusText(Optimizer.SearchResultStatusText+NL+Optimizer.SearchStateStatusText);
                                             {$ENDIF}
 
                                             TimeCheck;
@@ -17594,7 +17594,7 @@ A---B-
                                    {$ENDIF}
                                   );
                         {$ELSE}
-                          //SetSokobanStatusText(Optimizer.SearchResultStatusText+Optimizer.SearchStateStatusText);
+                          //SetSokobanStatusText(Optimizer.SearchResultStatusText+NL+Optimizer.SearchStateStatusText);
                         {$ENDIF}
                         TimeCheck; //ShowStatus;
                         if SearchHasTerminated then StopSearch;
@@ -17741,7 +17741,7 @@ A---B-
                                              //            {$ENDIF}
                                              //            );
                                              //   {$ELSE}
-                                             //     SetSokobanStatusText(Optimizer.SearchResultStatusText+Optimizer.SearchStateStatusText);
+                                             //     SetSokobanStatusText(Optimizer.SearchResultStatusText+NL+Optimizer.SearchStateStatusText);
                                              //   {$ENDIF}
                                              //
                                              //   TimeCheck;
@@ -18914,14 +18914,14 @@ A---B-
                   //AcquireSpinlock(Optimizer.Threads.Spinlock);
                   try
                     Optimizer.SearchStateStatusText:={$IFDEF PLUGIN_MODULE}
-                                                       '  ('+
+                                                       //'('+
                                                        VicinitySettingsAsText+
                                                      {$ENDIF}
                                                      TEXT_SEARCH_STATUS_VICINITY_5+
                                                      IntToStr(Pred(SearchDepth))+
                                                      DepthLimitAsText
                                                       {$IFDEF PLUGIN_MODULE}
-                                                       +RIGHT_PAREN
+                                                       //+RIGHT_PAREN
                                                      {$ENDIF}
                                                      ;
 
@@ -18943,7 +18943,7 @@ A---B-
                          //Readln;
                          end;
                     {$ELSE}
-                      SetSokobanStatusText(Optimizer.SearchResultStatusText+Optimizer.SearchStateStatusText);
+                      SetSokobanStatusText(Optimizer.SearchResultStatusText+NL+Optimizer.SearchStateStatusText);
                       TimeCheck; //ShowStatus;
                       if SearchHasTerminated then StopSearch;
                     {$ENDIF}
