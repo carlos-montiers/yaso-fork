@@ -633,7 +633,7 @@ const
   TEXT_SEARCH_STATUS_VICINITY_3
                            = 'Vicinity search (';
   TEXT_SEARCH_STATUS_VICINITY_4
-                           = SPACE+TEXT_MEBI_BYTES+'): '+
+                           = SPACE+TEXT_MEBI_BYTES+'):'+NL+
                              TEXT_GENERATING_POSITIONS+SPACE;
   TEXT_SEARCH_STATUS_VICINITY_5
                            = 'Vicinity search: ';
@@ -11914,7 +11914,14 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
 
                                   if Optimizer.GameMetrics.MoveCount<High(POptimizerPosition(NewPosition)^.MoveCount) then begin // '<': reserves highvalue (e.g., 65535 when the move count is a 16 bit unsigned number) for internal use
                                      if TTLookup(0,ppmExact,dUp,Position) then begin // 'True':  the position already exists
-                                        if WasALegalPush(Position) or (Position^.PushCount=0) then with Positions do begin
+                                        if WasALegalPush(Position)
+                                           or
+                                           ((Position^.PushCount=0)
+                                            and
+                                            (CharCount<MovesAsTextBufferByteSize__)
+                                            and
+                                            (MovesAsText__^<>NULL_CHAR)
+                                           ) then with Positions do begin
                                            with RepetitionMetrics do begin
                                              Inc(MoveCount      ,Optimizer.GameMetrics.MoveCount      -POptimizerPosition(Position)^.MoveCount);
                                              Inc(PushCount      ,Optimizer.GameMetrics.PushCount      -Position^.PushCount);
@@ -12203,7 +12210,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                 q:=BasePosition; NextInHashChain:=nil;
                 if q<>nil then
                    repeat if        (p^.HashValue=q^.HashValue) and (p^.PlayerPos=q^.PlayerPos) then begin
-                                    q:=p; Result:=-1;                           {this shouldn't happen, i.e., there cannot be 2 identical positions on the transposition table}
+                                    q:=p; Result:=-1;                           {there are two identical positions on the path, or two different positions with the same hash value and player position. terminate with failure}
                                     end
                           else if   p^.HashValue>=q^.HashValue then begin
                                     q:=q^.HashBucket.Next;                      {try next item in this bucket}
@@ -12212,7 +12219,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                                     end;
                    until  (p=q) or (q=BasePosition);                            {see the body of the loop for pointer manipulations that terminate the loop}
 
-                if p<>q then begin                                              {'<>': the position isn't already in the table (it should never happen that it's already in the table here)}
+                if p<>q then begin                                              {'<>': the position isn't already in the table}
                    if    NextInHashChain<>nil then begin                        {'True': insert the new position before 'NextInHashChain__'}
                          p^.HashBucket.Prev :=NextInHashChain^.HashBucket.Prev;
                          p^.HashBucket.Next :=NextInHashChain;
