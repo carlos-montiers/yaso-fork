@@ -69,8 +69,6 @@ You should have received a copy of the GNU General Public License along with thi
 
 {$DEFINE LIGHTWEIGHT_DEADLOCK_GENERATION}      {this generates a reasonable number of deadlocks and works pretty fast}
 
-{///$DEFINE MULTI_THREADED_VICINITY_SEARCH}       {multi-threaded vicinity search; this feature is *not* recommended; it's fully implemented and works correctly, but it's a lot slower than single-threaded search because of the synchronization overhead}
-
 {$R-}                                          {'R-': range checking disabled}
 
 {$IFDEF CONSOLE_APPLICATION}
@@ -179,34 +177,6 @@ const
   procedure GlobalMemoryStatusEx(var lpBuffer: TMemoryStatusEx); stdcall;
             external 'kernel32.dll' name 'GlobalMemoryStatusEx';
 {$ENDIF}
-
-{-----------------------------------------------------------------------------}
-{Thread Synchronization Primitives}
-
-const
-  DEFAULT_SPINLOCK_BUSY_LOOP_COUNT // busy loop, before thread goes to sleep
-                               = 4 * ONE_KIBI;
-
-{Critical Sections}
-{the application uses its own implementation of critical sections; the record
- layout must match the assembler code}
-
-type
-//TCriticalSection             = TRTLCriticalSection; // uses Windows critical sections;
-  TCriticalSection             = record
-    OwningThread               : Pointer;
-    LockCount                  : UInt;
-  end;
-  PCriticalSection             = ^TCriticalSection;
-
-{Spinlocks}
-{a spinlock is simpler than a critical section; the owning thread can't acquire
- the spinlock multiple times without releasing it}
-type
- TSpinLock                     = record
-   Lock                        : UInt;
- end;
- PSpinLock                     = ^TSpinLock;
 
 {-----------------------------------------------------------------------------}
 {Constants}
@@ -452,7 +422,7 @@ const
                            = 400*ONE_KIBI;
   MAX_SEARCH_TIME_LIMIT_MS = High(Integer)-1001; {'-1001': high-values are reserved for meaning 'unlimited'}
   MAX_SINGLE_STEP_MOVES    = MAX_BOARD_WIDTH*MAX_BOARD_HEIGHT+DIRECTION_COUNT*MAX_BOX_COUNT;
-  MAX_THREAD_COUNT         = 8;                {given the other limitations of the optimizer it probably doesn't make sense to activate too many processors}
+  MAX_THREAD_COUNT         = 1;                {given the other limitations of the optimizer it probably doesn't make sense to activate too many processors}
   MAX_TRANSPOSITION_TABLE_BYTE_SIZE            {limit the transposition table byte size to a signed integer and leave some memory free for other purposes}
                            : Integer
                            =
@@ -922,13 +892,9 @@ type
     ActiveThreadsCountDown : Integer; // number of active threads still running
     AnActiveThread         : Integer; // one of the still running threads,if any; 'NONE' when all threads have finished
     Count                  : Integer; // the thread count must be a signed integer and not an unsigned integer
-    CriticalSection        : TCriticalSection;
-    LockstepCount          : TLockstepCount;     // for internal use by the 'WaitForThreadsToBeInLockstep()' function
     LockstepCountForMoves  : TLockstepCount;     // for lockstep synchronization when threads advance from one search depth to the next
     LockstepCountForPushes : TLockstepCount;     // for lockstep synchronization when threads advance from one search depth to the next
     LockstepCountForSpans  : TLockstepCount;     // for lockstep synchronization when threads advance from one span of game states to the next; a span contains game states which all are reachable with the same number of moves and pushes
-    ProcessorCount         : Integer;
-//  SpinLock               : TSpinLock;
     ThreadFinishedEvents   : array[0..MAX_THREAD_COUNT-1] of THandle;
     Threads                : array[0..MAX_THREAD_COUNT-1] of TOptimizerThread;
     ThreadStartEvents      : array[0..MAX_THREAD_COUNT-1] of THandle;
@@ -1442,7 +1408,6 @@ var
   function  Finalize:Boolean;
   function  GameHistoryMovesAsText:String;
   function  GetPhysicalMemoryByteSize:UInt32;
-  function  GetNumberOfProcessors:UInt32;
   procedure InitializeBoard(BoardWidth__,BoardHeight__:Integer; FillSquares__:Boolean);
   function  InitializeGame(var PluginResult__:TPluginResult; var ErrorText__:String):Boolean;
   function  Initialize(MemoryByteSize__:Cardinal;
@@ -1497,7 +1462,6 @@ type
                                : TMemorySize;
     MemoryPageByteSize         : TMemorySize; // memory page size, in bytes
     PhysicalMemoryByteSize     : TMemorySize; // physical memory size, in bytes
-    PhysicalProcessorCount     : Cardinal;    // number of physical processors
   end;
 
 var
@@ -1535,19 +1499,6 @@ function  GetAvailableUserMemoryByteSize:Cardinal;
   end;
 {$ENDIF}
 
-function  GetNumberOfProcessors:UInt32;
-{$IFDEF WINDOWS}
-  var SystemInformation:TSystemInfo;
-  begin
-    GetSystemInfo(SystemInformation);
-    Result:=SystemInformation.dwNumberOfProcessors;
-  end;
-{$ELSE}
-  begin // no system information
-    Result := 1;
-  end;
-{$ENDIF}
-
 function  GetPhysicalMemoryByteSize:Cardinal;
 {$IFDEF WINDOWS}
   var MemoryStatusEx:TMemoryStatusEx;
@@ -1580,7 +1531,6 @@ procedure GetSystemInformation(
 
       MemoryAllocationGranularity := SystemInformation.dwAllocationGranularity;
       MemoryPageByteSize          := SystemInformation.dwPageSize;
-      PhysicalProcessorCount      := SystemInformation.dwNumberOfProcessors;
       PhysicalMemoryByteSize      := MemoryStatus     .dwTotalPhys;
       end;
   end;
@@ -1644,259 +1594,6 @@ begin // releases a memory region to the operating system;
       // precondition: the block address has been returned by 'VirtualAlloc()';
   Result := VirtualFree( Address__, 0, MEM_RELEASE );
 end;
-
-{-----------------------------------------------------------------------------}
-{Thread Synchronization Primitives}
-
-{Critical Sections}
-
-procedure InitializeCriticalSection(
-            var CriticalSection__ : TCriticalSection );
-begin
-  FillChar( CriticalSection__, SizeOf( CriticalSection__ ), 0 );
-end;
-
-procedure DeleteCriticalSection(
-            var CriticalSection__ : TCriticalSection );
-begin
-  InitializeCriticalSection( CriticalSection__ );
-end;
-
-procedure EnterCriticalSection(
-            var CriticalSection__ : TCriticalSection ); assembler;
-Label Acquire, Count, Retry, Sleep, Spin;
-asm // acquires the critical section;
-    // preconditions:
-    // 1. no more than High( CriticalSection__.LockCount ) calls at a time from
-    //    the owning thread;
-    // 2. Windows doesn't move the tread information block in memory (because
-    //    the function uses this address as thread identifier instead of the
-    //    real thread identifier, which is stored differently in Windows NT and
-    //    Windows 9x);
-          push  ebx
-          mov   ebx, fs:[$18] // get linear address of thread information block
-//        mov   ebx, [ebx + $24] // current thread identifier, Windows NT
-          cmp   ebx, CriticalSection__.OwningThread // is this thread the owner?
-          je    Count        // increase lock level for the owning thread
-  Retry:  mov   ecx, DEFAULT_SPINLOCK_BUSY_LOOP_COUNT // ecx := spin loop count
-  Spin:   mov   edx, CriticalSection__.OwningThread // edx := owning thread
-          test  edx, edx     // is owning thread = 0?
-          jz    Acquire      // Yes: try to acquire the critical section
-          rep   nop          // No : insert short delay (no "pause" in Delphi)
-          dec   ecx          // ecx -= 1, i.e., decrease the  spin count
-          jnz   Spin         // ecx  = 0? if 'False': check the lock again
-  Sleep:  push  eax          // save 'CriticalSection__' address
-          pushfd             // save cpu flags
-          cld                // clear direction flag, in case it was set
-          push  0            // push parameters for 'SleepEx()'
-          push  0
-          call  SleepEx      // yield by calling SleepEx( timeout, alertable? )
-          popfd              // restore flags, possibly with direction flag set
-          pop   eax          // restore 'CriticalSection__' address
-          jmp   Retry        // check the lock again
-  Acquire:
-          xchg  eax, edx     // eax := 0, edx := addr( CriticalSection__ )
-          lock  cmpxchg [edx].CriticalSection__.OwningThread, ebx // atomic
-          mov   eax, edx     // eax := addr( CriticalSection__ )
-          jnz   Retry        // another thread acquired the lock; try again
-          mov   CriticalSection__.LockCount, 1 // set lock level := 1
-          pop   ebx
-          ret
-  Count:  inc   CriticalSection__.LockCount // count lock level for the thread
-          pop   ebx
-end;
-
-procedure LeaveCriticalSection(
-            var CriticalSection__ : TCriticalSection ); assembler;
-label Exit;
-asm // leaves the critical section;
-    // postcondition: the function also works as a memory barrier;
-          dec   CriticalSection__.LockCount // decrease lock level
-          jnz   Exit // 'lock level <> 0': 'Yes' : still locked
-          xor   ecx, ecx     // ecx := 0
-          // 'XCHG' a memory variable has an implied 'LOCK',
-          // hence, no 'LOCK' prefix
-          xchg  ecx, CriticalSection__.OwningThread // release the lock
-  Exit:
-end;
-
-{Spinlocks}
-
-{a spinlock is simpler than a critical section; a spinlock doesn't allow thread
- lock recursion, i.e., the owning thread can only acquire the lock once}
-
-procedure AcquireSpinLock( var SpinLock__ : TSpinLock ); assembler;
-Label Acquire, Retry, Sleep, Spin;
-asm // acquires the spinlock
-  Retry:  mov   ECX, DEFAULT_SPINLOCK_BUSY_LOOP_COUNT // ecx := busy loop count
-{$IFDEF DELPHI}
-  Spin:   mov   EDX, SpinLock__.Lock      // edx := spinlock
-{$ELSE}
-  Spin:   mov   EDX, [EAX]                // edx := spinlock
-{$ENDIF}
-          test  EDX, EDX     // is SpinLock__.Lock = 0 ?
-          jz    Acquire      // Yes: try to acquire the spinlock
-{pause =} rep   nop          // No : insert short delay (no "pause" in Delphi)
-          dec   ECX          // ecx -= 1, i.e., decrease the  spin count
-          jnz   Spin         // ecx  = 0? if 'False': check spinlock again
-  Sleep:  push  EAX          // save 'SpinLock__' address
-          pushfd             // save cpu flags
-          cld                // clear direction flag, in case it was set
-          push  0            // push parameters for 'SleepEx()'
-          push  0
-          call  SleepEx      // yield by calling SleepEx( timeout, alertable? )
-          popfd              // restore flags, possibly with direction flag set
-          pop   EAX          // restore 'SpinLock__' address
-          jmp   Retry        // check the spinlock again
-  Acquire:
-          mov   ECX, 1       // ecx := 1
-{$IFDEF DELPHI}
-          xchg  SpinLock__.Lock, ECX // atomically exchange( Lock, ecx )
-{$ELSE}
-          xchg  [EAX], ECX           // atomically exchange( Lock, ecx )
-{$ENDIF}
-          test  ECX, ECX     // was SpinLock__.Lock = 0 before the swap?
-          jnz   Retry        // No : another thread acquired the lock; try again
-end;                         // Yes: the lock has been acquired by this thread
-
-procedure InitializeSpinLock( var SpinLock__ : TSpinLock );
-begin // initializes the spinlock
-  SpinLock__.Lock      := 0;
-end;
-
-function  IsSpinLockBlocked( var SpinLock__ : TSpinLock) : Boolean;
-begin
-  Result := SpinLock__.Lock <> 0;
-end;
-
-procedure ReleaseSpinLock( var SpinLock__ : TSpinLock ); assembler;
-asm // releases the spinlock;
-    // postcondition: the function must also work as a memory barrier;
-          xor   ECX, ECX     // ecx := 0
-{$IFDEF DELPHI}
-          xchg  SpinLock__.Lock, ECX // atomically exchange( Lock, ecx )
-{$ELSE}
-          xchg  [EAX], ECX           // atomically exchange( Lock, ecx )
-{$ENDIF}
-end;
-
-{-----------------------------------------------------------------------------}
-{Atomically Update and Exchange Values}
-
-procedure InterlockedAdd(var Destination__:Cardinal;
-                         Value__          :Cardinal); assembler;
-asm
-  lock add [Destination__], Value__
-end;
-
-function InterlockedCompareExchange( Destination__ : Pointer;
-                                     Exchange__    : Int32;
-                                     Comparand__   : Int32 ) : Int32;
-                                   assembler;
-asm // updates the destination atomically with the 'Exchange__' value provided
-    // the initial value matches 'Comparand__'; returns the initial value at
-    // the destination
-    // parameters : Rax: pointer to destination
-    //              Rdx: 'Exchange__'
-    //              Rcx: 'Comparand__'
-    // precondition: the destination is aligned according to platform standard;
-    {$IFDEF X86_32}
-      xchg  EAX, ECX // eax := 'Comparand__'; ecx := 'Destination__'
-      lock  cmpxchg [ECX], EDX
-    {$ELSE} // X86_64
-      not implemented
-    {$ENDIF}
-end;
-
-function InterlockedCompareExchangePointer(
-           Destination__ : Pointer; // pointer to the destination
-           Exchange__    : Pointer;
-           Comparand__   : Pointer ) : Pointer; assembler;
-asm // updates the destination atomically with the 'Exchange__' value provided
-    // the initial value matches 'Comparand__'; returns the initial value at
-    // destination
-    // parameters : Rax: 'Destination__'
-    //              Rdx: 'Exchange__'
-    //              Rcx: 'Comparand__'
-    // precondition: the destination is aligned according to platform standard;
-    {$IFDEF X86_32}
-      xchg  EAX, ECX // eax := 'Comparand__'; ecx := 'Destination__'
-      lock  cmpxchg [ECX], EDX
-    {$ELSE} // X86_64
-      not implemented
-    {$ENDIF}
-end;
-
-function InterlockedDecrement( var Integer__ : Int32) : Int32; assembler;
-asm // decreases the variable atomically by 1; returns the new value;
-    // parameters : RAX: address of 'Integer__'
-    // precondition: the variable is aligned according to platform standard;
-    {$IFDEF X86_32}
-      mov   ECX, EAX         // ecx := address
-      mov   EAX, $ffffffff   // eax := -1
-      lock  xadd [ECX], EAX  // xadd: destination -= source; source := old
-      dec   EAX
-    {$ELSE} // X86_64
-      not implemented
-    {$ENDIF}
-end;
-
-function InterlockedExchange( var Integer__ : Int32;
-                              Value__       : Integer ) : Int32; assembler;
-asm // sets the value of the variable atomically; returns the old value;
-    // precondition: the variable is aligned according to platform standard;
-    {$IFDEF X86_32}
-      xchg EAX, EDX
-      // 'XCHG' a memory variable has an implied 'LOCK', hence, no 'LOCK' prefix
-      lock xchg [EDX], EAX
-    {$ELSE} // X86_64
-      not implemented
-    {$ENDIF}
-end;
-
-function InterlockedIncrement( var Integer__ : Int32) : Int32; assembler;
-asm // increases the variable atomically by 1; returns the new value;
-    // parameters : RAX: address of 'Integer__'
-    // precondition: the variable is aligned according to platform standard;
-    {$IFDEF X86_32}
-      mov   ECX, EAX         // ecx := address
-      mov   EAX, 1           // eax := 1
-      lock  xadd [ECX], EAX  // xadd: destination += source; source := old
-      inc   EAX
-    {$ELSE} // X86_64
-      not implemented
-    {$ENDIF}
-end;
-
-{$WARNINGS OFF} // Return value of function might be undefined
-function InterlockedIncrement64( var Integer__ : Int64) : Int64; assembler;
-label Retry;
-asm // increases the variable atomically by 1; returns the new value;
-    // parameters : RAX: address of 'Integer__'
-    // precondition: the variable is aligned according to platform standard;
-    {$IFDEF X86_32}
-      push  ebx
-      push  edi
-      mov   edi, eax         // edi := address
-      mov   eax, [edi]       // edx:eax := current value
-      mov   edx, [edi + 4]
-  Retry:
-      mov   ebx, eax         // ecx:ebx := current value
-      mov   ecx, edx
-      add   ebx, 1           // new value := current value + 1
-      adc   ecx, 0
-//    lock  cmpxchg8b [edi]  // atomically compare and exchange value
-      db    $F0,$0F,$C7,$0F  // Delphi version 4 doesn't have 'cmpxchg8b'
-      jnz   Retry            // 'True': try again; the current value has changed
-      mov   eax, ebx         // Result := new value
-      mov   edx, ecx
-      pop   edi
-      pop   ebx
-    {$ELSE} // X86_64
-      not implemented
-    {$ENDIF}
-end;
-{$WARNINGS ON}
 
 // Memory barrier
 // --------------
@@ -2390,9 +2087,6 @@ function  PerformSokobanCallBackFunction:Integer;
 var Index:Integer;
 begin {returns a non-zero value if the solver should terminate}
   if   Assigned(Solver.SokobanCallBackFunction) then with Solver.SokobanStatusPointer^ do begin
-       EnterCriticalSection(Optimizer.Threads.CriticalSection);
-       //AcquireSpinLock(Optimizer.Threads.SpinLock);
-       try
          MovesGenerated :=Solver.MoveCount;
          PushesGenerated:=Solver.PushCount;
          StatesGenerated:=Int64(YASO.Positions.Count)+YASO.Positions.SearchStatistics.DroppedCount;
@@ -2403,9 +2097,6 @@ begin {returns a non-zero value if the solver should terminate}
                 end;
          TimeMS:=UInt32(Game.InitializationTimeMS+Solver.TimeMS+Optimizer.TimeMS);
          Result:=Solver.SokobanCallBackFunction();
-       finally LeaveCriticalSection(Optimizer.Threads.CriticalSection);
-               //ReleaseSpinLock(Optimizer.Threads.SpinLock);
-       end;
        end
   else Result:=0;
 end;
@@ -2416,9 +2107,6 @@ procedure SetSokobanStatusText(const Text__:String);
 {$ENDIF}
 begin
   with Solver.SokobanStatusPointer^ do begin
-    EnterCriticalSection(Optimizer.Threads.CriticalSection);
-    //AcquireSpinLock(Optimizer.Threads.SpinLock);
-    try
       {$IFDEF CONSOLE_APPLICATION}
         StatusText:=Text__;
         Writeln(StatusText);
@@ -2427,9 +2115,6 @@ begin
         if CharCount<>0 then System.Move(PChar(Addr(Text__[1]))^,PChar(Addr(StatusText))^,CharCount*SizeOf(Char));
         StatusText[Low(StatusText)+CharCount]:=NULL_CHAR; // add null-terminator
       {$ENDIF}
-    finally LeaveCriticalSection(Optimizer.Threads.CriticalSection);
-            //ReleaseSpinLock(Optimizer.Threads.SpinLock);
-    end;
     end;
 end;
 
@@ -2867,7 +2552,6 @@ begin
   Writeln('  -order     g|p|r|v| : enabled methods: Global, Perm., Rearran., Vicinity');
   Writeln('  -quick     <no|yes>          : optimizer quick vicinity-search enabled');
   Writeln('  -search    <method>          : optimize (default and only option)');
-  Writeln('  -threads   0..',MAX_THREAD_COUNT,'              : number of parallel worker threads');
   Writeln('  -vicinity  <number> ...      : vicinity squares per box (maximum 4 boxes)');
 end;
 
@@ -10861,13 +10545,10 @@ begin
                    if   ( State in [tsStart..tsStop] ) and
                         Assigned( ThreadFunction ) then begin
 
-                        EnterCriticalSection( CriticalSection );
-                        try     if AnActiveThread = NONE then
+                                if AnActiveThread = NONE then
                                    AnActiveThread := ThreadIndex__;
                                 if State<>tsStop then
                                    State := tsBusy; // update thread state
-                        finally LeaveCriticalSection( CriticalSection );
-                        end;
 
                         ThreadFunction( ThreadIndex__ ); // start the thread
                         end
@@ -10929,9 +10610,6 @@ begin
 
     if Count<>0 then begin // 'True': destroy locks;
        Count:=0;
-       // destroy critical section
-       DeleteCriticalSection( CriticalSection );
-       // destroy spinlock
        // do nothing
        end;
     end;
@@ -10945,20 +10623,15 @@ var Index, MaximumThreadCount : Integer; MemoryPageByteSize : Cardinal;
 begin // initializes the optimizer threads
   Result := True;
   FillChar( Optimizer.Threads, SizeOf( Optimizer.Threads ), 0 );
-  // initialize locks;
-  InitializeCriticalSection( Optimizer.Threads.CriticalSection );
-  //InitializeSpinLock(Optimizer.Threads.SpinLock);
   with Optimizer.Threads do
     try
       {$IFDEF Windows}
         GetSystemInfo( SystemInformation );
         MemoryPageByteSize          := SystemInformation.dwPageSize;
-        ProcessorCount              := Max(1,Integer(SystemInformation.dwNumberOfProcessors));  // save the number of processors
-        MaximumThreadCount          := Min( Min( MAX_THREAD_COUNT, MAXIMUM_WAIT_OBJECTS ), ProcessorCount ); // calculate the maximum number of worker threads
+        MaximumThreadCount          := 1; // number of worker threads
       {$ELSE}
         MemoryPageByteSize          := 8 * ONE_KIBI;
-        NumberOfProcessors          := 1;
-        MaximumThreadCount          := Max( 0, Min( Min( MAX_THREAD_COUNT, MAXIMUM_WAIT_OBJECTS ), ThreadCount__ );
+        MaximumThreadCount          := 1;
       {$ENDIF}
       if         ThreadCount__      <  MaximumThreadCount then                  // 'True': the user hasn't specified more than the maximum number of threads
          if      ThreadCount__      >  1 then                                   // 'True': the user has specified 2 or more worker threads; use this number of threads
@@ -11029,8 +10702,6 @@ procedure OptimizerThreadHasFinished( ThreadIndex__ : Integer );
 var Index:Integer;
 begin // performs cleanup when an optimizer thread has finished its job
   with Optimizer.Threads do with Threads[ThreadIndex__] do begin
-    EnterCriticalSection( CriticalSection );
-    try
       InterlockedDecrement( ActiveThreadsCountDown );                           // update the number of still running worker threads
       if State<>tsUninitialized then State:=tsIdle;
       if ThreadIndex__ = AnActiveThread then begin                              // 'True': find another still running thread, if any
@@ -11041,8 +10712,6 @@ begin // performs cleanup when an optimizer thread has finished its job
                    AnActiveThread := Index; break;                              // 'break': quick-and-dirty exit the loop when a still running thread has been found
                    end;
          end;
-    finally LeaveCriticalSection( CriticalSection );
-    end;
     end;
 end;
 
@@ -11056,7 +10725,6 @@ begin // resumes the given number of optimizer worker threads;
    ThreadCount__                    :=Max(0,Min(ThreadCount__,Count));
    ActiveThreadsCount               :=ThreadCount__; // must be initialized to "all active threads" before any of the threads start running; otherwise, a thread may misinterpret a zero value as an indication of that all threads have finished
    ActiveThreadsCountDown           :=ThreadCount__; // likewise
-   LockstepCount                    :=0;
    LockstepCountForMoves            :=0;
    LockstepCountForPushes           :=0;
    LockstepCountForSpans            :=0;
@@ -11100,7 +10768,6 @@ begin // waits for the optimizer worker threads to finish their work assignment;
     if Result then begin
        ActiveThreadsCount    :=0;
        ActiveThreadsCountDown:=0;
-       LockstepCount         :=0;
        LockstepCountForMoves :=0;
        LockstepCountForPushes:=0;
        LockstepCountForSpans :=0;
@@ -11132,14 +10799,8 @@ end; // Optimize.SearchStatePromptText
 procedure ShowStatus;
 begin
   if Positions.BestPosition<>nil then begin
-     EnterCriticalSection(Optimizer.Threads.CriticalSection);
-     //AcquireSpinLock(Optimizer.Threads.SpinLock);
-     try
        Optimizer.SearchResultStatusText:=OptimizerMetricsAsText(Positions.BestPosition)+NL+
                                          LEFT_PAREN+OptimizerImprovementAsText(Positions.BestPosition)+RIGHT_PAREN;
-     finally LeaveCriticalSection(Optimizer.Threads.CriticalSection);
-             //ReleaseSpinLock(Optimizer.Threads.SpinLock);
-     end;
      end;
   SetSokobanStatusText(SearchStatePromptText+
                       {$IFDEF CONSOLE_APPLICATION}
@@ -15333,9 +14994,6 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
           end; // BTRotate
 
         begin // 'BTAdd'; returns 'True' if the box configuration is added to the tree; the new item, or the already existing item, is returned in 'Item__'
-          EnterCriticalSection(Optimizer.Threads.CriticalSection);
-          //AcquireSpinLock(Optimizer.Threads.SpinLock);
-          try
             Item__:=Tree__.Root; Depth:=0; Parents[0]:=nil; i:=-1;
             while (Item__<>nil) and (i<>0) and (Depth<High(Parents)) do begin   // 'i<>0': the item hasn't been found in the tree
               Inc(Depth); Parents[Depth]:=Item__;                               // remember what will be the parent item after descending one step further down the tree
@@ -15400,9 +15058,6 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                   end
                else Result:=False;                                                // allocation of the new item failed, e.g., the memory is full
                end;
-          finally LeaveCriticalSection(Optimizer.Threads.CriticalSection);
-                  //ReleaseSpinLock(Optimizer.Threads.SpinLock);
-          end;
         end; // BTAdd
 
         function  BTAverageNodeDepth(const Tree__:TBinaryTree):Double;
@@ -15737,13 +15392,8 @@ A---B-
                                          if   IsBasePosition__ and (Index=FirstIndex) then begin // 'True': this is the base position from the best found path
                                               BasePosition^.Position.Score:=1;  // use the 'Score' field as a flag telling that this position from the best found path has been added to the box configurations set
 
-                                              EnterCriticalSection(Optimizer.Threads.CriticalSection);
-                                              //AcquireSpinLock(Optimizer.Threads.SpinLock);
-                                              try     Dec(Positions.Count);     // adjust the statistics; the base position has been counted earlier when it was created and now again when it was added to the tree
-                                              finally LeaveCriticalSection(Optimizer.Threads.CriticalSection);
-                                                      //ReleaseSpinLock(Optimizer.Threads.SpinLock);
-                                              end;
-                                              end;
+                                              Dec(Positions.Count);     // adjust the statistics; the base position has been counted earlier when it was created and now again when it was added to the tree
+                                         end;
                                          if ({Tree.Count}Item.Key) and ((1 shl 17)-1)=0 then begin // 'True': update the status and perform a time check
                                             if {Tree.Count}Item.Key and (ONE_MEBI-1)=0  then begin
                                                // if the tree is a plain binary search tree instead of
@@ -15753,9 +15403,6 @@ A---B-
                                                // are added to a binary tree;
                                                // BTRebalance(Tree); // not enabled because the tree is rebalanced dynamically as a red-black tree
                                                end;
-                                            EnterCriticalSection(Optimizer.Threads.CriticalSection);
-                                            //AcquireSpinLock(Optimizer.Threads.SpinLock);
-                                            try
                                               Optimizer.SearchStateStatusText:={$IFDEF PLUGIN_MODULE}
                                                                                  //'('+
                                                                                  VicinitySettingsAsText+
@@ -15769,10 +15416,6 @@ A---B-
                                                                                  //+RIGHT_PAREN
                                                                                {$ENDIF}
                                                                                ;
-                                            finally
-                                              LeaveCriticalSection(Optimizer.Threads.CriticalSection);
-                                              //ReleaseSpinLock(Optimizer.Threads.SpinLock);
-                                            end;
 
                                             {$IFDEF CONSOLE_APPLICATION}
                                               Writeln(SearchStatePromptText,
@@ -16010,10 +15653,7 @@ A---B-
                     end;
              for Index:=1 to Game.BoxCount do Inc(Game.Board[Game.BoxPos[Index]],BOX); {put boxes back on the board}
 
-             with Optimizer.Threads do
-               if      (Count=2) and (ProcessorCount=2) then ActiveThreadsCount:=2           // use two worker threads running in parallel with the main thread
-               else if Count> 2                         then ActiveThreadsCount:=Pred(Count) // use one worker thread less than the total number of threads, so the main thread counts towards the limit
-                    else                                     ActiveThreadsCount:=0;          // let the main thread generate the box configurations
+             Optimizer.Threads.ActiveThreadsCount:=0;          // let the main thread generate the box configurations
              Result:=ResumeOptimizerThreads(Optimizer.Threads.ActiveThreadsCount);           // start worker threads, if any
 
              try
@@ -16478,9 +16118,6 @@ A---B-
 
         begin // AllocateMemoryBlock; tries to allocate a memory block
           Result:=False; Block__:=nil;
-          EnterCriticalSection(Optimizer.Threads.CriticalSection);
-          //AcquireSpinLock(Optimizer.Threads.SpinLock);
-          try
             if (not Optimizer.V.SearchData.Threads[ThreadIndex__].SearchSliceHasTerminated) and // 'True': the search through the current slice of the game hasn't been terminated
                (MinBlockByteSize__>=Cardinal(SizeOf(Block__^))) then begin
                if FreeMemoryBlocks__.Root<>nil then begin                       // 'True': the free list isn't empty
@@ -16512,9 +16149,6 @@ A---B-
                   {$ENDIF}
                   end;
                end;
-            finally LeaveCriticalSection(Optimizer.Threads.CriticalSection);
-                    //ReleaseSpinLock(Optimizer.Threads.SpinLock);
-            end;
         end; // AllocateMemoryBlock
 
         function  FindMemoryBlockWithItem(Item__:Pointer; const MemoryBlocks__:TMemoryBlockList):PMemoryBlock;
@@ -16553,13 +16187,8 @@ A---B-
                end;
         end; // FirstItemInBlock
 
-        procedure MemoryBlockListAddItem(Item__:PMemoryBlock; var List__:TMemoryBlockList; Lock__:Boolean);
+        procedure MemoryBlockListAddItem(Item__:PMemoryBlock; var List__:TMemoryBlockList);
         begin // adds a new item to the end of the list
-          if Lock__ then begin
-             EnterCriticalSection(Optimizer.Threads.CriticalSection);
-             //AcquireSpinLock(Optimizer.Threads.SpinLock);
-             end;
-          try
             if List__.Root<>nil then with Item__^ do begin                      // 'True': the list isn't empty; add the new item to the end of the list
                Previous:=List__.Root^.Previous;
                Next    :=List__.Root;
@@ -16569,19 +16198,11 @@ A---B-
             else with Item__^ do begin                                          // the list is empty
                List__.Root:=Item__; Previous:=Item__; Next:=Item__;             // make a single item circular list
                end;
-          finally if Lock__ then begin
-                     LeaveCriticalSection(Optimizer.Threads.CriticalSection);
-                     //ReleaseSpinLock(Optimizer.Threads.SpinLock);
-                     end;
-          end;
         end; // MemoryBlockListAddItem
 
         procedure MemoryBlockListAddList(Head__:PMemoryBlock; var List__:TMemoryBlockList);
         var Last:PMemoryBlock;
         begin // adds a circular linked list of items to the list
-          EnterCriticalSection(Optimizer.Threads.CriticalSection);
-          //AcquireSpinLock(Optimizer.Threads.SpinLock);
-          try
             if Head__<>nil then                                                 // 'True': it isn't an empty list that is added
                if   List__.Root<>nil then begin
                     Last                  :=List__.Root^.Previous;              // last member of the original list
@@ -16591,9 +16212,6 @@ A---B-
                     Head__^.Previous      :=Last;
                     end
                else List__.Root:=Head__;
-          finally LeaveCriticalSection(Optimizer.Threads.CriticalSection);
-                  //ReleaseSpinLock(Optimizer.Threads.SpinLock);
-          end;
         end; // MemoryBlockListAddList
 
         function  MemoryBlockListInitialize(var List__:TMemoryBlockList):Boolean;
@@ -16620,11 +16238,6 @@ A---B-
         function  AdvanceToNextMemoryBlock(FreeOldBlock__:Boolean; var Item__:Pointer; var Queue__:TQueue; var EndOfBlock__:PMemoryBlock):Boolean;
         var OldBlock:PMemoryBlock;
         begin // advances to the next memory block after having processed the items on the block given by 'EndOfBlock__'; a memory block is its own end-of-block pointer; that explains the 'EndOfBlock__' name;
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-          EnterCriticalSection(Optimizer.Threads.CriticalSection);
-          //AcquireSpinLock(Optimizer.Threads.SpinLock);
-          try
-{$ENDIF}
             OldBlock:=EndOfBlock__;                                             // each block is its own end-of-block pointer
             EndOfBlock__:=EndOfBlock__^.Next;                                   // advance to the next queue memory block
             Item__:=FirstItemInBlock(EndOfBlock__,Queue__.ItemByteSize);        // point to the first item in the block
@@ -16632,16 +16245,11 @@ A---B-
                if OldBlock^.ReferenceCount>0 then Dec(OldBlock^.ReferenceCount);
                if OldBlock^.ReferenceCount=0 then begin                         // 'True': release the old block
                   MemoryBlockListRemoveItem(OldBlock,Queue__.MemoryBlocks);     // remove the just finished memory block from the queue
-                  MemoryBlockListAddItem   (OldBlock,Optimizer.V.SearchData.FreeMemoryBlocks,False); // add the just finished block to the free-list
+                  MemoryBlockListAddItem   (OldBlock,Optimizer.V.SearchData.FreeMemoryBlocks); // add the just finished block to the free-list
                   end;
                if OldBlock=EndOfBlock__ then EndOfBlock__:=nil;                 // 'True': the last memory block on the circular list has been recycled
                end;
             Result:=EndOfBlock__<>nil;                                          // 'True': advancing to the next memory block succeeded, i.e., the circular list of memory blocks isn't empty
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-          finally LeaveCriticalSection(Optimizer.Threads.CriticalSection);
-                  //ReleaseSpinLock(Optimizer.Threads.SpinLock);
-          end;
-{$ENDIF}
         end; // AdvanceToNextMemoryBlock
 
         function  CalculateQueueItemPushPathLength(Item__:PQueueItem):Integer;
@@ -16676,7 +16284,7 @@ A---B-
                   else Bottom:=nil;                                             // 'nil': the queue is empty
                   OldBlock:=Root;
                   MemoryBlockListRemoveItem(OldBlock,SpanQueue__.MemoryBlocks); // remove the just finished memory block from the queue
-                  MemoryBlockListAddItem   (OldBlock,Optimizer.V.SearchData.FreeMemoryBlocks,True); // add the just finished block to the free-list
+                  MemoryBlockListAddItem   (OldBlock,Optimizer.V.SearchData.FreeMemoryBlocks); // add the just finished block to the free-list
                   end;
                end
             else InternalError('Dequeue span: Queue empty');
@@ -16690,7 +16298,7 @@ A---B-
             Result:=AllocateMemoryBlock(BlockByteSize__,NewBlock,Optimizer.V.SearchData.FreeMemoryBlocks);
             if Result then begin                                                // 'True': allocating a new memory block succeeded
                //NewBlock^.ReferenceCount:=1;                                   // initialize the reference count for the block (commented out because reference counts are not needed in the current implementation)
-               MemoryBlockListAddItem(NewBlock,MemoryBlocks,True);              // add the new block to the list of blocks attached to the queue
+               MemoryBlockListAddItem(NewBlock,MemoryBlocks);                   // add the new block to the list of blocks attached to the queue
 
                // a memory block is represented by its 'TMemoryBlock'
                // data-structure with the links to other blocks;
@@ -17059,12 +16667,7 @@ A---B-
             // initialize the search for the current slice
             VicinitySearchState:=vssNone;                                       // reset vicinity search state
             FillChar(FreeMemoryBlocks,SizeOf(FreeMemoryBlocks),0);              // clear the list with free memory blocks
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-            if   Optimizer.V.BoxConfigurations.Count>=MIN_BOX_CONFIGURATIONS_FOR_MULTITHREADED_SEARCH then
-                 ThreadCount:=Optimizer.Threads.Count                           // use all available worker threads for the search
-            else
-{$ENDIF}
-                 ThreadCount:=0;                                                // let the main thread perform the search itself
+            ThreadCount:=0;                                                     // let the main thread perform the search itself
 
             Result:=Result and
                     (StartBoxConfigurationIndex <>NONE) and (StartPlayerSquare <>NONE) and
@@ -17097,13 +16700,6 @@ A---B-
                 Optimizer.Threads.Threads[ThreadIndex__].State:=tsIdle;
              ThreadIndex__:=NONE;
              end;
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-          // suspend optimizer worker threads, if any
-          if not WaitForOptimizerThreads(True) then begin
-             TerminateSearch;
-             RuntimeError(TEXT_SEARCH_STATUS_VICINITY_5 + TEXT_SUSPEND_OPTIMIZER_THREADS_FAILED);
-             end;
-{$ENDIF}
           with Optimizer.V.SearchData do
             for Index:=Low(Threads) to High(Threads) do with Threads[Index] do begin // accumulate totals
                 Inc(Solver.MoveCount,MoveCount); MoveCount:=0;
@@ -17304,10 +16900,7 @@ A---B-
 
         begin // IsNewBetterPath; checks whether the new found path is better than the existing one, in which case the best path is updated
           Result:=False;
-          EnterCriticalSection(Optimizer.Threads.CriticalSection);
-          //AcquireSpinLock(Optimizer.Threads.SpinLock);
           with Optimizer.V.SearchData do
-            try
               if not SearchSliceResult then begin                               // 'True': no other worker thread has found a new better path yet; check if the current path is a new better path
                  MarkMemory(MemoryMark);
 
@@ -17327,15 +16920,9 @@ A---B-
                        StopSearch;                                              // make all other worker threads finish, so this one is the only one still running
                        ReleaseMemory(MemoryMark);                               // release any temporary memory allocated by 'MakePath';
 
-                       LeaveCriticalSection(Optimizer.Threads.CriticalSection); // release the lock so other worker threads aren't blocked; this is also a memory barrier, flushing all pending memory updates
-                       //ReleaseSpinLock(Optimizer.Threads.SpinLock);
-                       try
                          while Optimizer.Threads.ActiveThreadsCountDown>1 do    // '1': self
                            SleepEx(0,False);                                    // wait until the other worker threads have finished
-                       finally EnterCriticalSection(Optimizer.Threads.CriticalSection); // balance lock/unlock operations with the encompassing 'try..finally' block
-                               //AcquireSpinLock(Optimizer.Threads.SpinLock);
-                               MarkMemory(MemoryMark);
-                       end;
+                           MarkMemory(MemoryMark);
                        end;
 
                     Result:=SaveNewBestPath(PPosition(FirstPosition),NewBestPathIsASolution);
@@ -17345,10 +16932,6 @@ A---B-
 
                  ReleaseMemory(MemoryMark);                                     // release any temporary memory allocated by 'MakePath'; if a new best path has been found then it doesn't matter; in that case, the caller must not continue the search anyway
                  end;
-            finally LeaveCriticalSection(Optimizer.Threads.CriticalSection);
-                    //ReleaseSpinLock(Optimizer.Threads.SpinLock);
-          end;
-
         end; // IsNewBetterPath
 
         function  IsVisited(GameState__:TGameState):Boolean;
@@ -17419,211 +17002,7 @@ A---B-
              for Index:=0 to Pred(Optimizer.Threads.ActiveThreadsCount) do
                  Inc(Result,Optimizer.V.SearchData.Threads[Index].PushCount);   // the result is not thread-safe and can only be used for progress messages
         end;
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-        function  FindWork(var Item__           :PQueueItem;                    // first item in the returned span of game-states
-                           var EndOfSpan__      :PQueueItem;                    // a pointer right after the last item in the span
-                           var ItemIndex__      :Cardinal;                      // first item in the returned span = 0
-                           var ItemCount__      :Cardinal;                      // number of items in the returned span
-                           var StolenItemCount__:Cardinal;                      // tail of stolen items after the first 'ItemCount__' game-states in the returned span up to 'EndOfSpan__'
-                           var Queue__          :PQueue):Boolean;               // the queue which owns the game-states span
-        const THEFT_ITEM_COUNT_THRESHOLD=10;                                    // minimum number of game-states to steal work from another thread
-        var Index:Integer; NewStolenItemCount:Cardinal;
 
-          function  GetItemByIndexFromEndOfSpan(
-                      var Index__                          : Cardinal;          // input: the selected index (from the end of the span, 1-based); output: the index (also from the end of the span, 1-based) of the returned item
-                      var Item__                           : PQueueItem;        // the returned item (game-state) in the span
-                      EndOfSpan__                          : PQueueItem;        // the end of the span
-                      var {const} Queue__                  : TQueue;            // the queue to which the span belongs
-                      RoundIndexToStartOfMemoryBlock__     : Boolean;           // 'True': if the specified index doesn't belong to the memory block where the span ends, then round the index down to select an item at the beginning of a memory block
-                      RoundIndexToStartOfLastMemoryBlock__ : Boolean            // 'True': if the specified index doesn't belong to the memory block where the span ends, then round the index down to select the first item in the last memory block
-                    ) : Boolean;
-          var MemoryBlockItemCount,MemoryBlocksItemCount:Cardinal;
-              FirstItem:PQueueItem;
-              MemoryBlock:PMemoryBlock;
-          begin // finds the item with number 'Index__' counted from the end of the span, 1-based;
-                // optionally the index is rounded down so an item at the beginning of a memory block is selected;
-                // optionally the index is rounded down so the item at the beginning of the last memory block is selected, i.e., the memory block which contains the end of the span
-                // precondition: the caller ensures thread safety;
-            Result               :=False;
-            MemoryBlocksItemCount:=0; // total blocks counted from the end of the span
-            Item__               :=nil;
-            //EnterCriticalSection(Optimizer.Threads.CriticalSection);
-            ////AcquireSpinlock(Optimizer.Threads.Spinlock);
-            //try
-                    MemoryBlock:=FindMemoryBlockWithItem(EndOfSpan__,Queue__.MemoryBlocks); // find the memory block that contains the end of the span; a memory block is its own end-of-data-area pointer;
-                    if (MemoryBlock<>nil) and (Pointer(MemoryBlock)<>Pointer(EndOfSpan__)) then begin // 'True': the memory block didn't disappear in the meantime, and the span doesn't end at the end of the block (an internal constraint)
-                       repeat FirstItem:=FirstItemInBlock(MemoryBlock,Queue__.ItemByteSize); // get address of the first item in the memory block
-                              MemoryBlockItemCount:=( Cardinal(EndOfSpan__) - Cardinal(FirstItem) ) div Queue__.ItemByteSize; // calculate the number of items from the start of the memory block to the currently selected item in the memory block
-                              if MemoryBlockItemCount<Index__ then begin        // 'True': the searched item is not in the current memory block; go back to the previous one;
-                                 if MemoryBlock<>Queue__.MemoryBlocks.Root then begin // 'True': there is a previous memory block
-                                    Inc(MemoryBlocksItemCount,MemoryBlockItemCount); // update the number of items counted from the end of the span
-                                    Dec(Index__  ,MemoryBlockItemCount);        // decrease the index to search for
-                                    Item__     :=FirstItem;                     // use the 'Item__' return value to save the beginning of this memory block before going back to the previous memory block
-                                    MemoryBlock:=MemoryBlock^.Previous;         // go back to the previous memory block
-                                    EndOfSpan__:=PQueueItem(MemoryBlock);       // go to the end of the block; the 'EndOfSpan__' variable name is a misnomer from this point; now it's used as 'EndOfBlock'
-                                    MemoryBlockItemCount:=0;                    // prepare to stay in the loop, i.e., to go back to the previous memory block
-                                    if RoundIndexToStartOfLastMemoryBlock__ then // 'True': stay on the memory block which contains the end of the span
-                                       Index__:=0;                              // '0': leave the loop, selecting the the first item on the last memory block which contains the end of the span
-                                    end
-                                 else begin                                     // no previous memory block, i.e., the searched index is out of range
-                                    FirstItem:=nil; Index__:=0;                 // exit loop
-                                    end;
-                                 end
-                              else if (MemoryBlockItemCount>Index__) and        // 'True': the selected item is an interior item in the current memory block
-                                      (Item__<>nil) and                         // 'True': this is not the memory block where the span ends; at this point, 'Item__' contains the beginning of the next memory block
-                                      (RoundIndexToStartOfMemoryBlock__) then begin // 'True': round the index down so the item at the beginning of the next memory block is returned
-                                      FirstItem:=Item__;                        // return the first item in the next memory block
-                                      Index__:=0;                               // '0': don't steal any items from the current memory block
-                                      MemoryBlockItemCount:=Index__;            // exit loop
-                                      end;
-                       until  MemoryBlockItemCount>=Index__;                    // 'True': found the memory block with the selected item number, or the index is out of range
-                       if Assigned(FirstItem) then begin                        // 'True': found the memory block with the selected item number
-                          Inc(FirstItem,MemoryBlockItemCount-Index__);          // focus the selected item inside the memory block
-                          Inc(Index__,MemoryBlocksItemCount);                   // return the index (1-based from the end of the span) of the selected item
-                          Item__ :=FirstItem;                                   // return the selected item
-                          Result :=True;
-                          end;
-                       end
-                    else begin
-                       {$IFDEF CONSOLE_APPLICATION}
-                         if MemoryBlock=nil then
-                            Writeln('Memory block disappeared');
-                       {$ENDIF}
-                       end;
-
-            //finally LeaveCriticalSection( Optimizer.Threads.CriticalSection);
-            //        //ReleaseSpinlock(Optimizer.Threads.Spinlock);
-            //end;
-          end; // GetItemByIndexFromEndOfSpan
-
-          function  CalculateHowManyItemsToSteal(ThreadIndex__:Integer):Cardinal;
-          var Index:Cardinal;
-          begin
-            with Optimizer.V.SearchData.Threads[ThreadIndex__] do begin
-              Result:=CurrentSpanItemCount; Index:=ItemIndex;                   // get copies of the values, so they don't change during the following calculation
-              if   (not SearchHasTerminated) and
-                   (CurrentSpanItemCount<>High(CurrentSpanItemCount)) and
-                   (Result>Index) then                                          // 'True': the worker thread 'ThreadIndex__' had not expanded all game-states in the span at the time the local snapshot 'Result' of the span size was taken
-                   Result:=(Result-Index) div 2                                 // calculate half the number of pending items in the span; the calculation is not thread-safe, and the value may change while work-stealing is in progress
-              else Result:=0;
-              end;
-          end; // CalculateHowManyItemsToSteal
-
-        begin // 'FindWork' tries to find and steal work from other running threads
-          Result:=False;
-          Index:=Succ(ThreadIndex__) mod Optimizer.Threads.ActiveThreadsCount;  // start looking for more work at the next thread
-          with Optimizer.V.SearchData do
-                 while (Index<>ThreadIndex__) and (not Result) do with Threads[Index] do begin
-                   if CalculateHowManyItemsToSteal(Index)>=THEFT_ITEM_COUNT_THRESHOLD then begin // 'True': try to steal work from the worker thread with number 'Index'
-                      EnterCriticalSection(Optimizer.Threads.CriticalSection);
-                      //AcquireSpinlock(Optimizer.Threads.Spinlock);
-                      //SuspendThread(Optimizer.Threads.Threads[Index].Handle);
-                      try
-                        NewStolenItemCount:=CalculateHowManyItemsToSteal(Index)+ // recalculate the number of items (game-states) to steal now that the other threads are blocked
-                                            CurrentSpanStolenItemCount;          // the tail items 'CurrentSpanStolenItemCount' have already been stolen by other threads, hence stealing 'ItemCount' items must take that into account
-                        if  (NewStolenItemCount>=THEFT_ITEM_COUNT_THRESHOLD+CurrentSpanStolenItemCount) and // 'True': try to steal work from the thread with number 'Index'
-                            // when stealing work from other threads, it's
-                            // practical never to split memory blocks;
-                            // otherwise, a thread cannot just free a memory
-                            // block with processed items when the thread gets
-                            // to the end of the block; a reference count
-                            // mechanism for recycling memory blocks would be
-                            // needed; that explains the boolean parameters in
-                            // the following function call;
-                            GetItemByIndexFromEndOfSpan(
-                              NewStolenItemCount,
-                              Item__,
-                              EndOfCurrentSpan,
-                              CurrentGameStatesQueue^,
-                              CurrentGameStatesQueue^.ItemType=qitMove,         // 'True': memory blocks with moves are recycled when all moves in the block have been expanded, hence only steal complete      blocks to avoid thread conflicts
-                              CurrentGameStatesQueue^.ItemType=qitMove)         // 'True': memory blocks with moves are recycled when all moves in the block have been expanded, hence only steal from the last block  to avoid thread conflicts
-                            and
-                            (NewStolenItemCount>=THEFT_ITEM_COUNT_THRESHOLD+CurrentSpanStolenItemCount) and // 'True': enough items to steal
-                            (CurrentSpanItemCount>ItemIndex) then begin         // 'True': maybe the original thread hasn't done all the work in the meantime
-                            ItemCount__                  :=NewStolenItemCount-CurrentSpanStolenItemCount; // number of items in the returned span
-                            StolenItemCount__            :=CurrentSpanStolenItemCount; // number of stolen items at the end of the returned span after the leading 'ItemCount__' items up to 'EndOfSpan__'
-                            Dec(CurrentSpanItemCount,ItemCount__);              // decrease the original owner's count of items in the span, in effect hiding the tail of the span from the original owner
-                            CurrentSpanStolenItemCount:=NewStolenItemCount;     // increase the original owner's count of the the number of game-states in the tail of the span after 'CurrentItemCount' items up to 'EndOfCurrentSpan'
-                            MemoryBarrier;                                      // flush any pending memory updates, so the original owner gets the information about the theft as soon as possible
-                            // update the remaining information needed by the stealing thread to expand the stolen game states
-                            EndOfSpan__                  :=EndOfCurrentSpan;
-                            ItemIndex__                  :=0;                   // first item index in the returned span = 0
-                            Queue__                      :=CurrentGameStatesQueue;
-                            Result                       :=True;
-                            end;
-                      finally //ResumeThread(Optimizer.Threads.Threads[Index].Handle);
-                              LeaveCriticalSection( Optimizer.Threads.CriticalSection);
-                              //ReleaseSpinlock(Optimizer.Threads.Spinlock);
-                      end;
-                      end;
-                   Index:=Succ(Index) mod Optimizer.Threads.ActiveThreadsCount; // advance to the next thread
-                   end;
-        end; // FindWork
-
-        function  WaitForThreadsToBeInLockstep(
-                    var LockstepCount__:TLockstepCount;
-                    InitializePhase__:Boolean):Boolean;
-        var Index:Integer; NextPhase,OldLockstepCount:TLockstepCount;
-        begin // ensures that all worker threads advance from one phase to the
-              // next in lockstep
-          OldLockstepCount:=LockstepCount__; // get a local copy of the phase count, so the beginning of the next phase can be calculated without considerations about updates of the lockstep variable from other threads
-          if   OldLockstepCount<MAX_LOCKSTEP_COUNT-MAX_THREAD_COUNT then with Optimizer.Threads do begin // 'True': no thread has found a new better path yet, and one more synchronization won't overflow the lockstep counter
-               NextPhase:=OldLockstepCount + (Cardinal(ActiveThreadsCount) - (OldLockstepCount mod Cardinal(ActiveThreadsCount))); // calculate when the next phase begins
-               InterlockedIncrement( Integer(LockstepCount__) );                // atomic update
-
-               // wait until all worker threads have finished the previous phase
-               while LockstepCount__ < NextPhase do begin // 'True': some of the other worker threads haven't finished this phase yet, and none of them has found a better path
-                 SleepEx( 0, False );
-                 end;
-               // all threads are ready to start this phase;
-
-               if InitializePhase__ then begin
-                  // one of the running threads performs the phase initialization;
-                  if ThreadIndex__=AnActiveThread then begin
-                     // accumulate totals
-                     for Index:=0 to Pred(Optimizer.Threads.ActiveThreadsCount) do
-                         with Optimizer.V.SearchData.Threads[Index] do begin
-                           Inc(Solver.MoveCount,MoveCount); MoveCount:=0;
-                           Inc(Solver.PushCount,PushCount); PushCount:=0;
-                           end;
-
-                     // see if it's time to perform a timecheck
-                     if Solver.MoveCount>Optimizer.V.SearchData.LastStatusMoveCount+2*ONE_MEBI then begin
-                        {$IFDEF CONSOLE_APPLICATION}
-                           Writeln(SearchStatePromptText,
-                                   Optimizer.SearchStateStatusText,
-                                   ' Moves/Pushes: ',
-                                   Solver.MoveCount div ONE_MILLION,
-                                   SLASH,
-                                   Solver.PushCount div ONE_MILLION,' million'
-                                   {$IFDEF WINDOWS}
-                                     ,' Time: ',CalculateElapsedTimeS(Solver.StartTimeMS,GetTimeMS)
-                                   {$ENDIF}
-                                  );
-                        {$ELSE}
-                          //SetSokobanStatusText(Optimizer.SearchResultStatusText+NL+Optimizer.SearchStateStatusText);
-                        {$ENDIF}
-                        TimeCheck; //ShowStatus;
-                        if SearchHasTerminated then StopSearch;
-                        Optimizer.V.SearchData.LastStatusMoveCount:=Solver.MoveCount;
-                        end;
-                     end;
-
-                  // synchronize again after the time check and after updating totals
-                  OldLockstepCount:=Optimizer.Threads.LockstepCount;            // 'Optimizer.Threads.LockstepCount' is a private lockstep counter for this synchronization
-                  NextPhase:=OldLockstepCount + (Cardinal(ActiveThreadsCount) - (OldLockstepCount mod Cardinal(ActiveThreadsCount))); // calulate when the next phase begins
-                  InterlockedIncrement(Integer(Optimizer.Threads.LockstepCount)); // atomic update
-                  while (Optimizer.Threads.LockstepCount<>NextPhase) and
-                        (LockstepCount__< MAX_LOCKSTEP_COUNT) do                // 'True': wait in a busy loop
-                        asm rep nop                                             // "rep nop" = "pause"; there is no "pause" instruction in the built-in Delphi 4 assembler)
-                        end;
-                  end;
-               end
-          else DisableLockstepSynchronization(LockstepCount__);                 // lockstep counter overflow
-          Result:=LockstepCount__ < MAX_LOCKSTEP_COUNT;                         // 'True': no thread has found a new better path, and the lockstep variable hasn't overflowed
-          if not Result then StopSearch;                                        // 'True': the search must stop if lockstep synchronization fails;
-        end; // WaitForThreadsToBeInLockstep
-{$ENDIF}
         function  OptimizeMovesOrPushesOrBoxLines(Optimization__:TOptimization):Boolean;
 
           function  GenerateSuccessors(Item__,EndOfSpan__:PQueueItem;           // first item in the span, and a pointer right after the last item in the span
@@ -17646,33 +17025,14 @@ A---B-
             with Optimizer.V.SearchData.Threads[ThreadIndex__] do begin
               //if (Item__<>nil) and Item__<>Queue^.Bottom then
               //   InternalError('OptimizeMovesOrPushesOrBoxLines.GenerateSuccessors');
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-              // update global variables with the current span information, so
-              // other worker threads can access them; other threads may try to
-              // steal work from the end of the span;
-              EnterCriticalSection(Optimizer.Threads.CriticalSection);
-              //AcquireSpinlock(Optimizer.Threads.Spinlock);
-              try
-{$ENDIF}
                 CurrentGameStatesQueue:=Addr(SourceQueue__);
                 CurrentSpanItemCount:=SpanItemCount__;
                 CurrentSpanStolenItemCount:=0;
                 EndOfCurrentSpan:=EndOfSpan__;
                 ItemIndex:=0;                                                   // index of the current item (game-state) in the span; it's also the number of processed items in the span
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-              finally LeaveCriticalSection(Optimizer.Threads.CriticalSection);
-                      //ReleaseSpinlock(Optimizer.Threads.Spinlock);
-              end;
-{$ENDIF}
               if
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                 WaitForThreadsToBeInLockstep(Optimizer.Threads.LockstepCountForSpans,True) and // all worker threads must advance from one span to the next in lockstep
-{$ENDIF}
                  (not Optimizer.V.SearchData.Threads[ThreadIndex__].SearchSliceHasTerminated) then // 'True': the search hasn't been terminated
                  with Optimizer.V do with SearchData do begin
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                   repeat
-{$ENDIF}
                      if (CurrentSpanItemCount<>0) and (Item__<>nil) then begin  // 'True': this is not an empty span
                         EndOfBlock:=FindMemoryBlockWithItem(Item__,CurrentGameStatesQueue^.MemoryBlocks); // find memory block which contains the first item; a memory block is its own end-of-data pointer; that's why it's used here as 'EndOfBlock'
                         if EndOfBlock=nil then begin
@@ -17872,10 +17232,6 @@ A---B-
                      CurrentGameStatesQueue^.Bottom:=EndOfCurrentSpan;
 
                      if CurrentSpanItemCount<>High(CurrentSpanItemCount) then begin
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                        EnterCriticalSection(Optimizer.Threads.CriticalSection);
-                        try
-{$ENDIF}
                                 if   ItemIndex<CurrentSpanItemCount then begin
                                      Inc(ExpandedCount,ItemIndex);
                                      if not Threads[ThreadIndex__].SearchSliceHasTerminated then begin // '<': the number may be higher if another thread stole some work, and this thread expanded more items before it noticed the theft
@@ -17884,15 +17240,7 @@ A---B-
                                         end;
                                      end
                                 else Inc(ExpandedCount,CurrentSpanItemCount);
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                        finally LeaveCriticalSection(Optimizer.Threads.CriticalSection);
                         end;
-{$ENDIF}
-                        end;
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                   until (not GenerateSuccessors__) or
-                         (not FindWork(Item__,EndOfCurrentSpan,ItemIndex,CurrentSpanItemCount,CurrentSpanStolenItemCount,CurrentGameStatesQueue));
-{$ENDIF}
                    end;
               end;
           end; // GenerateSuccessors
@@ -17935,10 +17283,6 @@ A---B-
 
           function  OptimizeMovesPushes:Boolean;
           var ItemCount:Cardinal;
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-              NextMoveLockstepCount:TLockstepCount;
-              MoreMoves:Boolean;
-{$ENDIF}
               FirstItem:PQueueItem;
               FirstSpanWithOneMoreMove:PSpanItem;
               //Position,p:POptimizerPosition;
@@ -18027,33 +17371,13 @@ A---B-
 
                  SetVisited       (Cardinal(StartBoxConfigurationIndex)*PlayerSquareCount+Cardinal(StartPlayerSquare)); // mark the start position as visited
 
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                 MoreMoves:=False;                                              // 'False': this worker has finished expanding moves for the current search depth
-                 NextMoveLockstepCount:=Optimizer.Threads.LockstepCountForMoves; // for lockstep synchronization
-{$ENDIF}
                  FirstSpanWithOneMoreMove:=MoveSpansQueue.Bottom;               // the first span with moves (it's empty at this point; the initial game-state is the only member of the first push-span)
 
                  //Position:=SliceStartPosition;
 
                  repeat                                                         // for each move search depth...
                         SuccessorCount:=0;
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                        if MoreMoves and
-                           (MoveSpansQueue.Bottom=FirstSpanWithOneMoreMove) then begin // 'True': the worker thread has expanded all moves at the current search depth
-                           MoreMoves:=False;
-                           InterlockedIncrement(Integer(Optimizer.Threads.LockstepCountForMoves));
-                           end;
-
-                        // the worker threads must finish their current spans
-                        // and be in lockstep before it can be checked whether
-                        // all threads have finished expanding all moves
-                        // and pushes for the current search depth;
-                        WaitForThreadsToBeInLockstep(Optimizer.Threads.LockstepCountForSpans,True); // the worker threads must be in lockstep before is can be checked whether all of them have finished the current search depth
-
-                        if Optimizer.Threads.LockstepCountForMoves>=NextMoveLockstepCount then begin // 'True': all threads have finished expanding game states for the current search depth
-{$ELSE}
                         if MoveSpansQueue.Bottom=FirstSpanWithOneMoreMove then begin // 'True': change move-depth
-{$ENDIF}
                            {
                               // check whether the current search depth found a
                               // better path to one of the positions on the best
@@ -18082,14 +17406,7 @@ A---B-
                                 end;
                            }
                            Inc(SearchDepth); SuccessorCount:=0;
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                           MoreMoves:=True;
-                           Inc(NextMoveLockstepCount,Optimizer.Threads.ActiveThreadsCount);
-{$ENDIF}
                            if
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                                (NextMoveLockstepCount<MAX_LOCKSTEP_COUNT-MAX_THREAD_COUNT) and
-{$ENDIF}
                                 (SliceEndPosition<>nil) and
                                 (SearchDepth<=SliceEndPosition^.MoveCount) and
                                 (not SearchHasTerminated) and
@@ -18102,35 +17419,17 @@ A---B-
 
                         if   not SearchSliceHasTerminated then begin
                              if
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                                (ThreadCount=0) and                             // 'True': there are no parallel threads which must run in lockstep
-{$ENDIF}
                                 IsEmptySpan(MoveSpansQueue.Bottom,MoveSpansQueue,MovesQueue ) and
                                 IsEmptySpan(PushSpansQueue.Bottom,PushSpansQueue,PushesQueue) then begin // avoid multiplying empty spans
                                 DequeueSpan(MoveSpansQueue,FirstItem,ItemCount); // drop the empty pair of spans
                                 DequeueSpan(PushSpansQueue,FirstItem,ItemCount); // drop the empty pair of spans
                                 end
                              else begin
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                                if   MoreMoves then                             // 'True': this thread has more unexpanded moves for the current search depth
-{$ENDIF}
                                      Result:=ExpandMoves(SuccessorCount)        // game-states on the current move-span have m moves and p-1 pushes
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                                else WaitForThreadsToBeInLockstep(Optimizer.Threads.LockstepCountForSpans,True) // this thread has no move-span to process; it must update the lockstep counter so the other threads can proceed
-{$ENDIF}
                                      ;
                                 if   (not (Result or SearchSliceHasTerminated)) and
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                                     WaitForThreadsToBeInLockstep(Optimizer.Threads.LockstepCountForSpans,False) and
-{$ENDIF}
                                      MakeSpansForMovesAndPushes(ThreadCount=0) then begin // make a new pair of spans to enforce the separation of the items on the queues into sets with move-spans (m,p-1) and push-spans (m,p)
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                                     if   MoreMoves then                        // 'True': this thread has more unexpanded moves for the current search depth
-{$ENDIF}
                                           Result:=ExpandPushes(SuccessorCount)  // game-states on the current push-span have m moves and p pushes
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                                     else WaitForThreadsToBeInLockstep(Optimizer.Threads.LockstepCountForSpans,True) // this thread has no push-span to process; it must update the lockstep counter so the other threads can proceed
-{$ENDIF}
                                           ;
                                      end
                                 else StopSearch;
@@ -18287,15 +17586,8 @@ A---B-
                           if   MakeSpansForMovesAndPushes(False) then begin     // make spans for moves and pushes respectively, in effect adding a terminator after the pushes and moves added in the previous iteration
                                if   PushSpansQueue.Bottom<>FirstSpanWithOneMorePush then
                                     Result:=ExpandPushes(SuccessorCount)
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                               else WaitForThreadsToBeInLockstep(Optimizer.Threads.LockstepCountForSpans,True); // this thread has no push-span to process; it must update the lockstep counter so the other threads can proceed
-{$ENDIF}
                                     ;
                                if   not (Result or SearchSliceHasTerminated)
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                                    and
-                                    WaitForThreadsToBeInLockstep(Optimizer.Threads.LockstepCountForSpans,True)
-{$ENDIF}
                                     then
                                     Result:=ExpandMoves(SuccessorCount);
                                if   MorePushes and
@@ -18306,22 +17598,12 @@ A---B-
                                     end;
                                end
                           else StopSearch;                                      // stop the search if the memory is full
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                          // the worker threads must finish their current spans
-                          // and be in lockstep before it can be checked whether
-                          // all threads have finished generating all moves and
-                          // pushes which don't require one more push;
-                          WaitForThreadsToBeInLockstep(Optimizer.Threads.LockstepCountForSpans,True);
-{$ENDIF}
                         until ( Optimizer.Threads.LockstepCountForPushes >=
                                 Cardinal(Optimizer.Threads.ActiveThreadsCount) ) // until all worker threads have finished expanding game states for this search depth
                               or
                               SearchSliceHasTerminated;
                         end
                    else StopSearch;                                             // stop the search if the memory is full
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                   WaitForThreadsToBeInLockstep(Optimizer.Threads.LockstepCountForSpans,True); // the worker threads must be in lockstep before it can be checked whether the search has been terminated
-{$ENDIF}
                  until SearchSliceHasTerminated                                 // the search terminates either after finding a new better path, or if the users terminated the task manually, or if one of the limits were reached, e.g., a time limit
                        or
                        ((SliceEndPosition<>nil)
@@ -18333,17 +17615,9 @@ A---B-
 
                  if (not SearchSliceResult) and
                     (PushSpansQueue.Bottom<>nil) then begin                     // mark any remaining pushes on the pushes-queue as visited
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                    EnterCriticalSection(Optimizer.Threads.CriticalSection);
-                    try
-{$ENDIF}
                             with Optimizer.Threads.Threads[ThreadIndex__] do
                               if State<>tsUninitialized then State :=tsStop;    // so other threads don't set 'SearchSliceHasTerminated' for this thread back to 'True' by calling 'StopSearch()'
                             Threads[ThreadIndex__].SearchSliceHasTerminated:=False; // open up for processing items in 'GenerateSuccessors()' again
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                    finally LeaveCriticalSection(Optimizer.Threads.CriticalSection);
-                    end;
-{$ENDIF}
                     GenerateSuccessors(PSpanItem(PushSpansQueue.Bottom)^.FirstItem,PushesQueue.Top,High(Cardinal),True,True,False,PushesQueue,SuccessorCount);
                     if BoxLineSpansQueue.Bottom<>nil then // 'True': optimizing boxlines, ,i.e., the boxlines-queue is in use; mark the pushes on this queue too
                        GenerateSuccessors(PSpanItem(BoxLineSpansQueue.Bottom)^.FirstItem,BoxLinesQueue.Top,High(Cardinal),True,True,False,BoxLinesQueue,SuccessorCount);
@@ -18372,10 +17646,6 @@ A---B-
                         MakeSpansForMovesAndPushesAndBoxLines     and           // make spans for moves, pushes, and boxlines, in effect adding a terminator after the last push-span added in the previous iteration
                         MakeSpan(MovesQueue   ,MoveSpansQueue   ) and           // make empty moves-span,    the only one on the move-spans    queue at this point
                         MakeSpan(BoxLinesQueue,BoxLineSpansQueue)               // make empty boxlines-span, the only one on the boxline-spans queue at this point
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                        and
-                        WaitForThreadsToBeInLockstep(Optimizer.Threads.LockstepCountForPushes,True)
-{$ENDIF}
                         then begin
                         // at this point, there is at least one push-span from
                         // the previous iteration;
@@ -18396,18 +17666,9 @@ A---B-
                           // expand a push-span at this depth from the previous iteration; the pushes on the pushes-queue increase the number of boxlines
                           if   PushSpansQueue.Bottom<>FirstSpanWithOneMorePushAndOneMoreBoxLine then
                                Result:=ExpandPushes(SuccessorCount)
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                          else WaitForThreadsToBeInLockstep(Optimizer.Threads.LockstepCountForSpans,True); // this thread has no push-span to process; it must update the lockstep counter so the other threads can proceed
-{$ENDIF}
                                ;
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                          WaitForThreadsToBeInLockstep(Optimizer.Threads.LockstepCountForSpans,False);
-{$ENDIF}
                           // expand a boxline-span at this depth
                           Result:=ExpandBoxLinePushes(SuccessorCount) or Result;
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                          WaitForThreadsToBeInLockstep(Optimizer.Threads.LockstepCountForSpans,True);
-{$ENDIF}
                           if Optimizer.Optimization=opBoxLinesMoves then
                              // optimize boxlines/moves;
                              // expand a move-span at this depth
@@ -18419,12 +17680,7 @@ A---B-
                              Optimizer.Threads.LockstepCountForMoves:=0;        // initialize lockstep count for this search depth; threads synchronize on spans before they start working, so it's all right that all threads set the value to 0
                              while (not (Result or SearchHasTerminated))
                                    and
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                                   ( Optimizer.Threads.LockstepCountForMoves < // 'True': some worker threads haven't finished expanding non-pushing moves
-                                     Cardinal(Optimizer.Threads.ActiveThreadsCount) )
-{$ELSE}
                                    MoreMoves
-{$ENDIF}
                                    do begin
 
                                    if MovesQueue.Bottom<>MovesQueue.Top then
@@ -18432,25 +17688,8 @@ A---B-
                                            Result:=ExpandMoves(SuccessorCount) or Result
                                       else StopSearch
                                    else begin
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                                      WaitForThreadsToBeInLockstep(Optimizer.Threads.LockstepCountForSpans,True); // this thread has no move-span to process; it must update the lockstep counter so the other threads can proceed
-                                      if MoreMoves then begin
-                                         MoreMoves:=False;
-                                         InterlockedIncrement(Integer(Optimizer.Threads.LockstepCountForMoves)); // this worker thread has finished expanding non-pushing moves
-                                         end;
-{$ELSE}
                                       MoreMoves:=False;
-{$ENDIF}
                                       end;
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                                   // the worker threads must finish their
-                                   // current spans and be in lockstep before it
-                                   // can be checked whether all threads have
-                                   // finished generating all non-pushing moves
-                                   // for this search depth; the 'while'
-                                   // condition further up makes that check;
-                                   WaitForThreadsToBeInLockstep(Optimizer.Threads.LockstepCountForSpans,True);
-{$ENDIF}
                                    end;
                              end;
 
@@ -18461,13 +17700,6 @@ A---B-
                              MorePushes:=False;
                              InterlockedIncrement(Integer(Optimizer.Threads.LockstepCountForPushes));
                              end;
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                          // the worker threads must finish their current spans
-                          // and be in lockstep before it can be checked whether
-                          // all threads have finished generating all moves and
-                          // pushes;
-                          WaitForThreadsToBeInLockstep(Optimizer.Threads.LockstepCountForSpans,True);
-{$ENDIF}
                         until // until all non-pushing moves and all
                               // boxline-pushes have been expanded;
                               // at that point, the only unexpanded items are
@@ -18476,19 +17708,11 @@ A---B-
                               or
                               SearchHasTerminated
                               or
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                              ( Optimizer.Threads.LockstepCountForPushes >=
-                                Cardinal(Optimizer.Threads.ActiveThreadsCount) ) // 'True': all worker threads have finished expanding game states for this search depth
-{$ELSE}
                               (not MorePushes)
-{$ENDIF}
                               or
                               (not MakeSpansForMovesAndPushesAndBoxLines);
                         end
                    else StopSearch;                                             // stop the search if the memory is full
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                   WaitForThreadsToBeInLockstep(Optimizer.Threads.LockstepCountForSpans,True); // the worker threads must be in lockstep before it can be checked whether the search has been terminated
-{$ENDIF}
                  until SearchSliceHasTerminated                                 // the search terminates after finding a new better path, if the users terminated the task manually, or if one of the limits were reached, e.g., a time limit
                        or
                        ((SliceEndPosition<>nil)
@@ -18500,17 +17724,9 @@ A---B-
 
                  if (not SearchSliceResult) and
                     ((PushSpansQueue.Bottom<>nil) or (BoxLineSpansQueue.Bottom<>nil)) then begin // mark any remaining pushes on the pushes-queue and boxlines-queue as visited
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                    EnterCriticalSection(Optimizer.Threads.CriticalSection);
-                    try
-{$ENDIF}
                             with Optimizer.Threads.Threads[ThreadIndex__] do
                               if State<>tsUninitialized then State :=tsStop;    //  so other threads don't set 'SearchSliceHasTerminated' for this thread back to 'True' by calling 'StopSearch()'
                             Threads[ThreadIndex__].SearchSliceHasTerminated:=False;  // open up for processing items in 'GenerateSuccessors()'
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                    finally LeaveCriticalSection(Optimizer.Threads.CriticalSection);
-                    end;
-{$ENDIF}
                     if PushSpansQueue.Bottom<>nil then
                        GenerateSuccessors(PSpanItem(PushSpansQueue   .Bottom)^.FirstItem,PushesQueue  .Top,High(Cardinal),True,True,False,PushesQueue  ,SuccessorCount);
                     if BoxLineSpansQueue.Bottom<>nil then
@@ -18531,9 +17747,6 @@ A---B-
 
         function  OptimizePushesOnly:Boolean;
         // Optimize.Search.VicinitySearch.Search.OptimizePushesOnly
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-        var Index:Integer;
-{$ENDIF}
           function  Initialize:Boolean;
           var ByteSize,PushCount:Cardinal;
           begin // Optimize.Search.VicinitySearch.Search.OptimizePushesOnly.Initialize
@@ -18577,29 +17790,13 @@ A---B-
                 // update global variables with the current span information, so
                 // other worker threads can access them; other threads may try to
                 // steal work from the end of the span;
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                EnterCriticalSection(Optimizer.Threads.CriticalSection);
-                //AcquireSpinlock(Optimizer.Threads.Spinlock);
-                try
-{$ENDIF}
                   CurrentGameStatesQueue:=Addr(Queues.PushesQueue);
                   CurrentSpanItemCount:=SpanItemCount__;
                   CurrentSpanStolenItemCount:=0;
                   EndOfCurrentSpan:=EndOfSpan__;
                   ItemIndex:=0;                                                 // index of the current item (game-state) in the span; it's also the number of processed items in the span
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                finally LeaveCriticalSection(Optimizer.Threads.CriticalSection);
-                        //ReleaseSpinlock(Optimizer.Threads.Spinlock);
-                end;
-{$ENDIF}
                 if
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                   WaitForThreadsToBeInLockstep(Optimizer.Threads.LockstepCountForSpans,True) and // all worker threads must advance from one span to the next in lockstep
-{$ENDIF}
                    (not SearchSliceHasTerminated) then begin                    // True': the search hasn't been terminated
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                   repeat
-{$ENDIF}
                      if (CurrentSpanItemCount<>0) and (Item__<>nil) then begin  // 'True': this is not an empty span
                         EndOfBlock   :=FindMemoryBlockWithItem(Item__,CurrentGameStatesQueue^.MemoryBlocks); // find the memory block which contains the span mark; a memory block is its own end-of-data pointer
                         if EndOfBlock=nil then begin
@@ -18739,10 +17936,6 @@ A---B-
                        end;
 
                      if CurrentSpanItemCount<>High(CurrentSpanItemCount) then begin
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                        EnterCriticalSection(Optimizer.Threads.CriticalSection);
-                        try
-{$ENDIF}
                                 if   ItemIndex<CurrentSpanItemCount then begin  // '<': the number may be higher if another thread has stolen some work, and this thread expanded more items before it noticed the theft
                                      Inc(ExpandedCount,ItemIndex);
                                      if not Threads[ThreadIndex__].SearchSliceHasTerminated then begin
@@ -18751,14 +17944,7 @@ A---B-
                                         end;
                                      end
                                 else Inc(ExpandedCount,CurrentSpanItemCount);
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                        finally LeaveCriticalSection(Optimizer.Threads.CriticalSection);
                         end;
-{$ENDIF}
-                        end;
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                   until not FindWork(Item__,EndOfCurrentSpan,ItemIndex,CurrentSpanItemCount,CurrentSpanStolenItemCount,CurrentGameStatesQueue);
-{$ENDIF}
                    end;
                 end;
             end; // Optimize.Search.VicinitySearch.Search.OptimizePushesOnly.GenerateSuccessors
@@ -18789,16 +17975,6 @@ A---B-
                              Result:=ExpandPushes(SuccessorCount) or Result;
                              end
                         else StopSearch;                                        // stop the search if the memory is full
-{$IFDEF MULTI_THREADED_VICINITY_SEARCH}
-                        // the worker threads must finish their current spans
-                        // and be in lockstep before it can be checked whether
-                        // all threads have finished generating all moves and
-                        // pushes which don't require one more push;
-                        WaitForThreadsToBeInLockstep(Optimizer.Threads.LockstepCountForSpans,False);
-                        for Index:=0 to Pred(Optimizer.Threads.ActiveThreadsCount) do // check if any of the threads produced new pushes; otherwise the search was exhaustive
-                            SuccessorCount:=SuccessorCount or Threads[Index].SuccessorCount; // 'or' instead of '+' (which would require filtering out the current thread index): any non-zero value signals that one of the threads produced new pushes
-                        WaitForThreadsToBeInLockstep(Optimizer.Threads.LockstepCountForSpans,True); // wait until all threads have calculated the successor count 'total' (which isn't a real total, but just a 'bit-or' value for all the threads
-{$ENDIF}
                until    SearchSliceHasTerminated                                // the search can have terminated after finding a new better path, if the users terminated the task manually, or if one of the limits were reached, e.g., a time limit
                         or
                         (SuccessorCount=0)                                      // if the last iteration didn't produce new pushes, then the search was exhaustive
@@ -18917,9 +18093,6 @@ A---B-
                   end;
 
                if Result then begin
-                  EnterCriticalSection(Optimizer.Threads.CriticalSection);
-                  //AcquireSpinlock(Optimizer.Threads.Spinlock);
-                  try
                     Optimizer.SearchStateStatusText:={$IFDEF PLUGIN_MODULE}
                                                        //'('+
                                                        VicinitySettingsAsText+
@@ -18954,9 +18127,6 @@ A---B-
                       TimeCheck; //ShowStatus;
                       if SearchHasTerminated then StopSearch;
                     {$ENDIF}
-                  finally LeaveCriticalSection( Optimizer.Threads.CriticalSection);
-                          //ReleaseSpinlock(Optimizer.Threads.Spinlock);
-                  end;
                   end;
                end;
             end;
@@ -18966,8 +18136,6 @@ A---B-
         var Index:Integer;
         begin // stops searching through the current slice of the best found path
           Result :=nil;                                                         // return 'nil' in case it comes in handy for the caller to use the function result, say, to update a loop control variable
-          EnterCriticalSection(Optimizer.Threads.CriticalSection);
-          try
             with Optimizer.V.SearchData  do begin
               with Threads[ThreadIndex__].Queues do begin                       // ensure that no more game-states are added to the queues
                 MovesQueue   .Block   :=MovesQueue   .Top;                      // fake that the queue is full; it makes calls to 'EnqueueGameState()' fail because allocating new memory blocks fail when 'SearchSliceHasTerminated' = 'True'
@@ -18984,8 +18152,6 @@ A---B-
                        Threads[Index].SearchSliceHasTerminated:=True;           // 'True': signals that the search through the current slice has terminated, and ensures that 'AllocateMemoryBlock()' fails, i.e., no more memory blocks are allocated
                        end;
               end;
-          finally LeaveCriticalSection(Optimizer.Threads.CriticalSection);
-          end;
         end; // Optimize.Search.VicinitySearch.Search.StopSearch
 
         function  ThreadSearch:Boolean;
