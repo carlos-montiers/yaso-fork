@@ -895,9 +895,7 @@ type
     LockstepCountForMoves  : TLockstepCount;     // for lockstep synchronization when threads advance from one search depth to the next
     LockstepCountForPushes : TLockstepCount;     // for lockstep synchronization when threads advance from one search depth to the next
     LockstepCountForSpans  : TLockstepCount;     // for lockstep synchronization when threads advance from one span of game states to the next; a span contains game states which all are reachable with the same number of moves and pushes
-    ThreadFinishedEvents   : array[0..MAX_THREAD_COUNT-1] of THandle;
     Threads                : array[0..MAX_THREAD_COUNT-1] of TOptimizerThread;
-    ThreadStartEvents      : array[0..MAX_THREAD_COUNT-1] of THandle;
                              end;
   TSquareGoalDistance      = array[0..MAX_BOARD_SIZE,TBoxNo] of UInt8; {'UInt8': otherwise the table gets unreasonable large; distances above 254 are truncated, and '255' is reserved for meaning 'INFINITY', i.e., no path to the square}
   TPackingOrder            = record
@@ -1595,27 +1593,6 @@ begin // releases a memory region to the operating system;
   Result := VirtualFree( Address__, 0, MEM_RELEASE );
 end;
 
-// Memory barrier
-// --------------
-// A memory barrier prevents the CPU from re-ordering reads and writes
-
-{$IFDEF X86_32}
-  // a global variable is used so the memory barrier procedure doesn't need to
-  // create a stack frame for a local variable;
-  var
-    MemoryBarrierVariable : UInt;
-  procedure MemoryBarrier; assembler;
-  asm
-    // 'XCHG' a memory variable has an implied 'LOCK', hence, no 'LOCK' prefix
-    xchg MemoryBarrierVariable, EAX
-  end;
-{$ELSE} // X86_64
-  procedure MemoryBarrier; assembler;
-  asm
-    mfence // (SSE2)
-  end;
-{$ENDIF}
-
 {-----------------------------------------------------------------------------}
 {Forward Declarations}
 
@@ -1671,18 +1648,6 @@ end;
 function  CalculateElapsedTimeS(StartTimeMS__,StopTimeMS__:TTimeMS):TTimeMS;
 begin
   Result:=(CalculateElapsedTimeMS(StartTimeMS__,StopTimeMS__)+500) div 1000
-end;
-
-function  CloseHandle( var Handle__ : THandle ) : Boolean;
-begin // closes a Windows handle; Windows raises an exception if the handle is
-      // invalid, hence the 'try/except' wrapper to catch that situation;
-  try    Result := ( Handle__ = 0 ) or                    // un-initialized
-                   ( Handle__ = INVALID_HANDLE_VALUE ) or // invalid
-                   Windows.CloseHandle( Handle__ );       // try to close handle
-         if Result then    // 'True': success
-            Handle__ := 0; // clear the handle so the caller cannot use it again
-  except Result := False;
-  end;
 end;
 
 procedure DoNothing;
@@ -10527,257 +10492,6 @@ begin
 end; {TimeCheck}
 
 {-----------------------------------------------------------------------------}
-{Optimizer Threads}
-
-function  ExecuteOptimizerThread( ThreadIndex__ : Integer ) : Cardinal; stdcall;
-begin
-  try
-    with Optimizer.Threads do with Threads[ ThreadIndex__ ] do begin
-         State     := tsIdle; // set state to 'idle'
-         repeat
-                if Ord( SignalObjectAndWait(
-                          ThreadFinishedEvents[ ThreadIndex__ ],
-                          ThreadStartEvents   [ ThreadIndex__ ],
-                          INFINITE, False ) )
-                   = WAIT_OBJECT_0 then begin // 'True': wake up
-                   Result := ERROR_SUCCESS;
-                   //Writeln( 'Optimizer thread ', ThreadIndex__,' ready');
-                   if   ( State in [tsStart..tsStop] ) and
-                        Assigned( ThreadFunction ) then begin
-
-                                if AnActiveThread = NONE then
-                                   AnActiveThread := ThreadIndex__;
-                                if State<>tsStop then
-                                   State := tsBusy; // update thread state
-
-                        ThreadFunction( ThreadIndex__ ); // start the thread
-                        end
-                   else begin SleepEx( 0, False ); // do nothing
-                        end;
-                   end
-                else begin // something went wrong
-                   Result := ERROR_SUCCESS + 1;
-                   SleepEx( 1000, False );
-                   end;
-         until  State >= tsTerminate;
-
-         State := tsTerminated;
-         MemoryBarrier;
-         if   SetEvent( ThreadFinishedEvents[ ThreadIndex__ ] ) then
-              // setting the 'work completed' signal succeeded
-              //Writeln( 'Optimizer thread ', ThreadIndex__,' done')
-         else Result := ERROR_SUCCESS + 2 // failed
-         end;
-  except {$IFDEF DEFINE PLUGIN_MODULE}
-           on E:Exception do Msg('Optimizer thread error: ' + E.Message,
-                                 TEXT_APPLICATION_ERROR );
-         {$ENDIF}
-         Result := ERROR_SUCCESS + 3;
-  end;
-end;
-
-function  FinalizeOptimizerThreads:Boolean;
-var Index : Integer;
-begin
-  Result := True;
-  with Optimizer.Threads do begin
-    // terminate and destroy the optimizer worker threads
-    for Index := 0 to Pred( Count ) do
-        with Threads[ Index ] do
-             if ( Handle <> 0 ) and
-                ( Handle <> INVALID_HANDLE_VALUE ) // 'True': thread exists
-                then begin
-                // make the thread terminate when it wakes up
-                if State <> tsTerminated then
-                   State := tsTerminate;
-                MemoryBarrier; // flush any pending memory updates
-                // wake up the thread
-                Result:= SetEvent( ThreadStartEvents[ Index ] ) and Result;
-                // wait for it to finish
-                if   WaitForSingleObject( Handle, INFINITE ) = WAIT_OBJECT_0 then
-                     if   CloseHandle( Handle ) then // close thread handle
-                     else Result := False
-                else Result := False
-         end;
-
-    // destroy 'start' and 'finished' events for all the optimizer worker threads
-    for Index  := 0 to Pred( Count ) do
-        Result := CloseHandle( ThreadStartEvents   [ Index ] )
-                  and
-                  CloseHandle( ThreadFinishedEvents[ Index ] )
-                  and
-                  Result;
-
-    if Count<>0 then begin // 'True': destroy locks;
-       Count:=0;
-       // do nothing
-       end;
-    end;
-end;
-
-function  WaitForOptimizerThreads(StopThreads__:Boolean):Boolean; forward;
-
-function  InitializeOptimizerThreads( ThreadCount__ : Integer ) : Boolean;
-var Index, MaximumThreadCount : Integer; MemoryPageByteSize : Cardinal;
-    {$IFDEF Windows} SystemInformation:TSystemInfo; {$ENDIF}
-begin // initializes the optimizer threads
-  Result := True;
-  FillChar( Optimizer.Threads, SizeOf( Optimizer.Threads ), 0 );
-  with Optimizer.Threads do
-    try
-      {$IFDEF Windows}
-        GetSystemInfo( SystemInformation );
-        MemoryPageByteSize          := SystemInformation.dwPageSize;
-        MaximumThreadCount          := 1; // number of worker threads
-      {$ELSE}
-        MemoryPageByteSize          := 8 * ONE_KIBI;
-        MaximumThreadCount          := 1;
-      {$ENDIF}
-      if         ThreadCount__      <  MaximumThreadCount then                  // 'True': the user hasn't specified more than the maximum number of threads
-         if      ThreadCount__      >  1 then                                   // 'True': the user has specified 2 or more worker threads; use this number of threads
-                 MaximumThreadCount := ThreadCount__
-         else if ThreadCount__      >= 0 then                                   // 'True': the user has specified 0..1 threads
-                 MaximumThreadCount := 0;                                       // the main thread performs the search itself
-
-      // create optimizer threads
-      for Index := 0 to Pred( MaximumThreadCount ) do
-          if Result then with Threads[ Index ] do begin
-             if True then
-                Handle := CreateThread(
-                             nil,
-                             MemoryPageByteSize,
-                             @ExecuteOptimizerThread,
-                             Pointer( Index ),
-                             CREATE_SUSPENDED,
-                             Identifier )
-             else begin // main thread
-                Handle     := GetCurrentThread;   // a pseudohandle
-                Identifier := GetCurrentThreadId;
-                end;
-             Result := Handle <> 0;
-             if Result then begin // 'True': creating the thread succeeded
-                // set thread priority
-                SetThreadPriority( Handle, THREAD_PRIORITY_NORMAL );
-                // assign thread function
-                ThreadFunction:=Addr(Optimize);
-                // create 'start' and 'finished' events for the thread
-                ThreadStartEvents  [ Index ] :=
-                  CreateEvent(nil, False, False, nil ); // 'False': auto-reset
-                ThreadFinishedEvents[ Index ] :=
-                  CreateEvent(nil, False, False, nil ); // 'False': auto-reset
-                Result :=
-                   ( ThreadStartEvents   [ Index ] <> 0 ) and
-                   ( ThreadFinishedEvents[ Index ] <> 0 );
-                if   Result then begin // 'True': events OK; now start thread
-                     // update the number of created threads
-                     Inc( Count );
-                     // flush pending memory updates before the thread starts
-                     MemoryBarrier;
-                     Result := ResumeThread( Handle ) <= 1;
-                     if not Result then // 'True': starting the thread failed
-                        Dec( Count ); // adjust the number of created threads
-                     end;
-                end;
-             if not Result then begin // 'True': something failed; bail out;
-                // destroy the thread events
-                CloseHandle( ThreadStartEvents   [ Index ] );
-                CloseHandle( ThreadFinishedEvents[ Index ] );
-                CloseHandle( Handle ); // destroy thread
-                end;
-             end;
-      if Result and (Count>0) then begin // 'True': creating threads succeeded
-         ActiveThreadsCount:=Count; // all threads have been started
-         // wait until all the threads have initialized themselves
-         Result:=WaitForOptimizerThreads(False);
-         end;
-    finally
-      if not Result then begin
-         if Count=0 then Count:=-1; // '<>0': destroy locks
-         FinalizeOptimizerThreads;
-         end;
-    end;
-end; // InitializeOptimizerThreads
-
-procedure OptimizerThreadHasFinished( ThreadIndex__ : Integer );
-var Index:Integer;
-begin // performs cleanup when an optimizer thread has finished its job
-  with Optimizer.Threads do with Threads[ThreadIndex__] do begin
-      InterlockedDecrement( ActiveThreadsCountDown );                           // update the number of still running worker threads
-      if State<>tsUninitialized then State:=tsIdle;
-      if ThreadIndex__ = AnActiveThread then begin                              // 'True': find another still running thread, if any
-         AnActiveThread := NONE;
-         if ActiveThreadsCountDown <> 0 then
-            for Index := Low( Threads ) to Pred( ActiveThreadsCount ) do
-                if Threads[ Index ].State in [ tsStart..tsStop ] then begin
-                   AnActiveThread := Index; break;                              // 'break': quick-and-dirty exit the loop when a still running thread has been found
-                   end;
-         end;
-    end;
-end;
-
-function  ResumeOptimizerThreads(ThreadCount__:Integer):Boolean;
-var Index:Integer;
-begin // resumes the given number of optimizer worker threads;
-      // precondition: the threads have been initialized by calling
-      //               'InitializeOptimizerThreads()';
-  Result:=True;
-  with Optimizer.Threads do begin
-   ThreadCount__                    :=Max(0,Min(ThreadCount__,Count));
-   ActiveThreadsCount               :=ThreadCount__; // must be initialized to "all active threads" before any of the threads start running; otherwise, a thread may misinterpret a zero value as an indication of that all threads have finished
-   ActiveThreadsCountDown           :=ThreadCount__; // likewise
-   LockstepCountForMoves            :=0;
-   LockstepCountForPushes           :=0;
-   LockstepCountForSpans            :=0;
-   AnActiveThread                   :=NONE;
-   for Index:=0 to Pred(ThreadCount__) do begin
-       if Result then begin
-          Threads[Index].State:=tsStart;
-          MemoryBarrier; // flush any pending memory updates
-          Result:=SetEvent(ThreadStartEvents[Index]);
-          end;
-       if not Result then begin // 'True': the worker thread wasn't activated; update counts accordingly
-          InterlockedDecrement(ActiveThreadsCount);     // atomic update;
-          InterlockedDecrement(ActiveThreadsCountDown); // atomic update;
-          end;
-       end;
-   end;
-end;
-
-function  WaitForOptimizerThreads(StopThreads__:Boolean):Boolean;
-var Index:Integer; WaitResult:TWaitResult;
-begin // waits for the optimizer worker threads to finish their work assignment;
-      // precondition: the first 'Count__' worker threads are currently running
-  Result:=True;
-  with Optimizer.Threads do begin
-    if ActiveThreadsCount>0 then begin
-       if StopThreads__ then // 'True': send a 'stop' message to the worker threads
-          for Index:=0 to Pred(ActiveThreadsCount) do with Threads[Index] do
-              if State<tsStop then State:=tsStop;
-       MemoryBarrier; // flush any pending memory updates
-       WaitResult :=
-         WaitForMultipleObjects(
-           ActiveThreadsCount,PWOHandleArray( Addr( ThreadFinishedEvents ) ),
-           True, INFINITE );
-       Result := {$WARNINGS OFF} // comparison always evaluates to 'True'
-                   ( WaitResult >= WAIT_OBJECT_0 )
-                 {$WARNINGS ON}
-                 and
-                 ( WaitResult < WAIT_OBJECT_0 + UInt( ActiveThreadsCount ) );
-       MemoryBarrier; // flush any pending memory updates
-       end;
-    if Result then begin
-       ActiveThreadsCount    :=0;
-       ActiveThreadsCountDown:=0;
-       LockstepCountForMoves :=0;
-       LockstepCountForPushes:=0;
-       LockstepCountForSpans :=0;
-       AnActiveThread        :=NONE;
-       end;
-    end;
-end;
-
-{-----------------------------------------------------------------------------}
-{Optimizer}
 
 function  SearchStatePromptText:String;
 begin
@@ -15654,7 +15368,6 @@ A---B-
              for Index:=1 to Game.BoxCount do Inc(Game.Board[Game.BoxPos[Index]],BOX); {put boxes back on the board}
 
              Optimizer.Threads.ActiveThreadsCount:=0;          // let the main thread generate the box configurations
-             Result:=ResumeOptimizerThreads(Optimizer.Threads.ActiveThreadsCount);           // start worker threads, if any
 
              try
                // for each position on the best found path, generate permuted positions taking the vicinity constraints into account
@@ -15702,10 +15415,6 @@ A---B-
                       with Solver.VicinitySearchThreadDataForGeneratingBoxConfigurations[Index] do
                         while BasePosition<>nil do SleepEx(0,False);            // wait until the worker thread has finished its current work assignment, if any
              finally
-               if not WaitForOptimizerThreads(True) then begin
-                  TerminateSearch;
-                  Result:=RuntimeError(TEXT_GENERATING_POSITIONS + COLON + SPACE + TEXT_SUSPEND_OPTIMIZER_THREADS_FAILED);
-                  end;
                // re-initialize the player's reachable squares work areas;
                // generating the box configurations has used the overlapping
                // worker thread areas;
@@ -16675,8 +16384,7 @@ A---B-
                     (SliceStartPosition<>SliceEndPosition) and
                     MakeVisitedArea(VisitedArea) and                            // reserve and initialize a memory area to support the 'IsVisited()' and 'SetVisited()' functions
                     MakeThreadQueues(SearchDepth,Optimizer.V.SearchData.Threads) and // initialize the queues
-                    (not SearchSliceHasTerminatedForAllThreads) and             // the search may have been terminated before it starts
-                    ResumeOptimizerThreads(ThreadCount);                        // start worker threads, if any
+                    (not SearchSliceHasTerminatedForAllThreads);                // the search may have been terminated before it starts
             if Result then begin
                VicinitySearchState:=vssSearch;                                  // 'True': update the vicinity search state so 'Finalize()' can see that the search has been started
                if ThreadCount=0 then with Optimizer.Threads do begin            // no worker threads; the main thread performs the search itself
@@ -16913,17 +16621,6 @@ A---B-
                     // path is saved in the transposition table, and the worker
                     // threads use the same memory area for their search queues;
                     SearchSliceResult:=True;                                    // block other worker threads out from reporting new better paths too
-
-                    MemoryBarrier;
-
-                    if Optimizer.Threads.Count>0 then begin                     // 'True': the search isn't performed by the main thread itself
-                       StopSearch;                                              // make all other worker threads finish, so this one is the only one still running
-                       ReleaseMemory(MemoryMark);                               // release any temporary memory allocated by 'MakePath';
-
-                         while Optimizer.Threads.ActiveThreadsCountDown>1 do    // '1': self
-                           SleepEx(0,False);                                    // wait until the other worker threads have finished
-                           MarkMemory(MemoryMark);
-                       end;
 
                     Result:=SaveNewBestPath(PPosition(FirstPosition),NewBestPathIsASolution);
                     if not Result then                                          // 'True': something went wrong
@@ -18105,31 +17802,19 @@ A---B-
           if   Optimizer.Optimization=opPushesOnly then
                Result:=OptimizePushesOnly
           else Result:=OptimizeMovesOrPushesOrBoxLines(Optimizer.Optimization);
-          OptimizerThreadHasFinished(ThreadIndex__);                            // clean up after the thread has finished
         end; // Optimize.Search.VicinitySearch.Search.ThreadSearch
 
       begin // Optimize.Search.VicinitySearch.Search
         Result:=False;
-        if ThreadIndex__<>NONE then // 'True': this is the vinicity search worker thread with the specified index
-           Result:=ThreadSearch
-        else begin // this is the main thread; perform the vicinity search
+        // this is the main thread; perform the vicinity search
            Optimizer.V.VicinitySearchState:=vssNone;                            // reset the vicinity search state so 'Finalize()' works correctly even if the call to 'Initialize()' function inside the 'try..finally' block fails
            Optimizer.V.SearchData.ThreadCount:=0;                               // ditto
-           try     if Initialize then                                           // 'True': initialization succeeded, and the search hasn't been terminated
-                      if   Optimizer.V.SearchData.ThreadCount>0 then begin      // 'True': worker threads perform the search
-                           if not WaitForOptimizerThreads(False) then begin     // wait for worker threads to finish
-                              TerminateSearch;
-                              RuntimeError(TEXT_SEARCH_STATUS_VICINITY_5 + TEXT_SUSPEND_OPTIMIZER_THREADS_FAILED);
-                              end;
-                           Result:=Optimizer.V.SearchData.SearchSliceResult;    // 'True': one of the worker threads has found a new better path
-                           end
-                      else Result:=ThreadSearch;                                // no worker threads; the main thread performs the search itself
-           finally Result:=Finalize(Result);
-           end;
+           if Initialize then                                                   // 'True': initialization succeeded, and the search hasn't been terminated
+                           Result:=ThreadSearch;                                // no worker threads; the main thread performs the search itself
+           Result:=Finalize(Result);
            {$IFDEF CONSOLE_APPLICATION}
              Writeln('Time: ',CalculateElapsedTimeS(Solver.StartTimeMS,GetTimeMS),' Box configurations: ',Optimizer.V.BoxConfigurations.Count);
            {$ENDIF}
-           end;
       end; // Optimize.Search.VicinitySearch.Search
 
     begin // Optimize.Search.VicinitySearch
@@ -18777,7 +18462,7 @@ begin
   CloseGraphFile; GraphFile.FileName:=''; {close the file and ensure that the string is cleared}
   CloseLogFile; LogFile.FileName:='';     {close the file and ensure that the string is cleared}
   Optimizer.SearchResultStatusText:=''; Optimizer.SearchStateStatusText:='';
-  Result:=FinalizeOptimizerThreads;
+  Result:=True;
   FinalizeStatistics;
   TTFinalize;
   {$IFDEF CONSOLE_APPLICATION}
@@ -18912,7 +18597,7 @@ begin
   else Solver.SokobanStatusPointer:=Addr(Solver.SokobanStatus);
   {initialize the locally defined solver status record (it's only used if a caller doesn't provide its own record)}
   Solver.SokobanStatus.Size:=SizeOf(Solver.SokobanStatus);
-  Result:=InitializeOptimizerThreads(ThreadCount__);
+  Result:=True;
   if Result then SetSokobanStatusText('');
   Solver.Terminated:=False;
   Optimizer.Result:=prUnsolved;
