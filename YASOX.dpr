@@ -16100,9 +16100,9 @@ A---B-
         function  LookupBoxConfiguration(const BoxConfiguration__:TBoxConfiguration):Integer; forward;
         function  MakeSpan(var GameStateQueue__,SpanQueue__:TQueue):Boolean; forward;
         procedure MemoryBlockListRemoveItem(Item__:PMemoryBlock; var List__:TMemoryBlockList); forward;
-        function  ResetVisited(GameState__:TGameState):Boolean; forward;
+        procedure ResetVisited(GameState__:TGameState); forward;
         function  SearchSliceHasTerminatedForAllThreads:Boolean; forward;
-        function  SetVisited(GameState__:TGameState):Boolean; forward;
+        procedure SetVisited(GameState__:TGameState); forward;
         procedure ShowGameState(InternalPlayerSquare__:Integer; const BoxConfiguration__:TBoxConfiguration; const Caption__:String; Log__:Boolean); forward;
         function  ShowSearchStatus:Boolean; forward;
         function  StopSearch:PQueueItem; forward;
@@ -17052,7 +17052,8 @@ A---B-
                            (Item__   <>EndOfCurrentSpan) do begin               // for each item belonging to the span, or until the search terminates, generate successors and store them on one of the game-state queues (moves, pushes, or boxlines)
                        GameState               :=Item__^.GameState;
                        if FirstMarkPushesAsVisitedWhenTheyAreExpanded__ and IsPushesQueue__ then
-                          if   SetVisited(GameState) then begin                 // 'True': the game-state hasn't been expanded yet; it may exist at more than one moves-depth within the current push-depth contour)
+                          if   not IsVisited(GameState) then begin              // 'True': the game state hasn't been expanded yet; it may exist at more than one moves-depth within the current push-depth contour)
+                               SetVisited(GameState);                           // mark that the game state has been visited
                                if not GenerateSuccessors__ then                 // 'True': the search is over; what remains is to mark all seen pushes as visited as a preparation for 'CheckIntermediatePositionsOnBestFoundPath'
                                   GameState    :=High(GameState);               // skip generating successors for this item and continue to the next item
                                end
@@ -17898,7 +17899,8 @@ A---B-
                                       end
                                    else begin // the square next to the player in this direction is an empty floor
                                       GameState:=TGameState(Cardinal(BoxConfigurationIndex)*PlayerSquareCount+Cardinal(PlayerNeighborSquare));
-                                      if SetVisited(GameState) then begin       // 'True': this is the first time this game-state is seen
+                                      if not IsVisited(GameState) then begin  // 'True': this is the first time this game-state is seen
+                                         SetVisited(GameState);                 // mark that the game state has been visited
                                          Inc(MovesQueueTop);
                                          MovesQueueTop^:=PlayerNeighborSquare;  // enqueue the non-pushing player moves
                                          Inc(Threads[ThreadIndex__].MoveCount); // update statistics
@@ -17987,71 +17989,15 @@ A---B-
 
         end; // Optimize.Search.VicinitySearch.Search.OptimizePushesOnly
 
-        {$WARNINGS OFF} // return value of function(s) might be undefined
-          function  ResetVisited(GameState__:TGameState):Boolean;
-          label Done;
-          asm // sets the visited state to 'False' for the game state [box configuration, player square] represented by 'GameState__'
-              // precondition: 'Optimizer.V.VisitedArea' is aligned according to platform standard, e.g., 4-byte aligned on the X86_32 platform; otherwise the 'BTR' instruction (bit-test-reset) isn't atomic
-            //Dec(VisitedArea^[GameState__ div BITS_PER_BYTE],1 shl (GameState__ mod BITS_PER_BYTE)); // precondition: 'Visited' = 'False' for this game-state
-
-            {$IFDEF X86_32}
-              // push ebx // Delphi generates a 'push ebx' prologue
-              mov edx, eax                                                      // edx := GameState__
-              and edx, ((1 shl LOG2_BITS_PER_INTEGER) - 1)                      // calculate bit index in an integer := edx := Gamestate__ mod BITS_PER_INTEGER
-              shr eax, LOG2_BITS_PER_INTEGER                                    // calculate integer index           := eax := GameState__ div BITS_PER_INTEGER
-              shl eax, LOG2_BITS_PER_INTEGER - LOG2_BITS_PER_BYTE               // calculate byte index from integer index
-              mov ecx, [Optimizer.V.VisitedArea]                                // load address of the 'Visited?' bit-map
-              add ecx, eax                                                      // += byte index
-              // check whether the game state already is marked as unvisited;
-              bt  dword ptr [ecx], edx                                          // carry flag := bit
-              jnc Done                                                          // 'True': the bit was set
-              // reset bit in target byte atomically;
-              // 'BTR' instruction: Integer := Integer and (not (1 shl BitIndex)), and carry flag := old bit
-              lock btr dword ptr [ecx], edx
-            Done:
-              // set result value;
-              // 'True' : the game state was reset by this call;
-              // 'False': the game state was already marked as unvisited
-              setc al                                                           // Result := al := carry flag
-              pop ebx // Delphi generates a 'push ebx' prologue
-              ret
-            {$ELSE} // X86-64
-              not implemented
-            {$ENDIF}
+          procedure  ResetVisited(GameState__:TGameState);
+          begin // sets the visited state to 'False' for the game state [box configuration, player square] represented by 'GameState__'
+            Dec(Optimizer.V.VisitedArea^[GameState__ div BITS_PER_INTEGER],1 shl (GameState__ mod BITS_PER_INTEGER)); // precondition: 'Visited' = 'False' for this game-state
           end; // Optimize.Search.VicinitySearch.Search.ResetVisited
 
-          function  SetVisited(GameState__:TGameState):Boolean; assembler;
-          label Done;
-          asm // sets the visited state to 'True' for the game state [box configuration, player square] represented by 'GameState__'
-              // precondition: 'Optimizer.V.VisitedArea' is aligned according to platform standard, e.g., 4-byte aligned on the X86_32 platform; otherwise the 'BTS' instruction (bit-test-set) isn't atomic;
-            //Inc(VisitedArea^[GameState__ div BITS_PER_BYTE],1 shl (GameState__ mod BITS_PER_BYTE)); // precondition: 'Visited' = 'False' for this game-state
-
-            {$IFDEF X86_32}
-              // push ebx // Delphi generates a 'push ebx' prologue
-              mov edx, eax                                                      // edx := GameState__
-              and edx, ((1 shl LOG2_BITS_PER_INTEGER) - 1)                      // calculate bit index in an integer := edx := Gamestate__ mod BITS_PER_INTEGER
-              shr eax, LOG2_BITS_PER_INTEGER                                    // calculate integer index           := eax := GameState__ div BITS_PER_INTEGER
-              shl eax, LOG2_BITS_PER_INTEGER - LOG2_BITS_PER_BYTE               // calculate byte index from integer index
-              mov ecx, [Optimizer.V.VisitedArea]                                // load address of the 'Visited?' bit-map
-              add ecx, eax                                                      // += byte index
-              // check whether the game state already has been marked as visited
-              bt  dword ptr [ecx], edx                                          // carry flag := bit
-              jc  Done                                                          // 'True': the bit was set
-              // set bit in target integer atomically;
-              // 'BTS' instruction: Integer := Integer or (1 shl BitIndex), and carry flag := old bit
-              lock bts dword ptr [ecx], edx
-            Done:
-              // set result value;
-              // 'True' : the game state was marked as visited by this call;
-              // 'False': the game state was already marked as visited
-              setnc al                                                          // Result := al := carry flag; 'True': this call has set the bit
-              pop ebx // Delphi generates a 'push ebx' prologue
-              ret
-            {$ELSE} // X86-64
-              not implemented
-            {$ENDIF}
+          procedure  SetVisited(GameState__:TGameState);
+          begin // sets the visited state to 'True' for the game state [box configuration, player square] represented by 'GameState__'
+            Inc(Optimizer.V.VisitedArea^[GameState__ div BITS_PER_INTEGER],1 shl (GameState__ mod BITS_PER_INTEGER)); // precondition: 'Visited' = 'False' for this game state
           end; // Optimize.Search.VicinitySearch.Search.SetVisited
-        {$WARNINGS ON}
 
         procedure ShowGameState(InternalPlayerSquare__:Integer; const BoxConfiguration__:TBoxConfiguration; const Caption__:String; Log__:Boolean); // debugging service function
         var OldBoxCount,OldPlayerSquare:Integer; OldBoard:TBoard; OldBoxPos:TBoxSquares;
