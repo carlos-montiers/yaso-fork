@@ -14683,7 +14683,6 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                  Move(BoxConfiguration__,BoxConfiguration^,BoxConfigurationByteSize); // store the box configuration belonging to this tree item
                  Left :=nil;                                                    // 'nil': the new item is a leaf node
                  Right:=nil;                                                    // 'nil': the new item is a leaf node
-                 MemoryBarrier;                                                 // ensure that left and right pointers are updated before parallel worker threads get access to them, e.g., in "BTLookup()"
                  end;
               end;
           end; // BTMakeNewItem
@@ -14724,7 +14723,6 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                else with ExistingItem__^ do begin                               // re-use the existing node, e.g., when 'BTAdd' is called from 'BTMerge'; precondition: the existing item contains the box configuration 'BoxConfiguration__'
                   Left:=nil; Right:=nil;                                        // the item is now a new leaf node, hence, clear any old pointers
                   Item__:=ExistingItem__;
-                  MemoryBarrier;                                                // ensure that left and right pointers are updated before parallel worker threads get access to them, e.g., in "BTLookup()"
                   end;
                if Item__<>nil then begin
                   Inc(Positions.Count);                                         // update statistics
@@ -14792,7 +14790,6 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
         procedure BTInitialize(var Tree__:TBinaryTree);
         begin // initialize binary tree
           FillChar(Tree__,SizeOf(Tree__),0);
-          MemoryBarrier;
         end; // BTInitialize
 
         function  BTLookup(const BoxConfiguration__:TBoxConfiguration; const Tree__:TBinaryTree; var Item__:PBinaryTreeItem):Boolean;
@@ -15389,7 +15386,6 @@ A---B-
                    LoadBoxConfigurationFromGame(BoxConfiguration);              // make the bit-set representation of the current position (boxes only, the player position isn't taken into account)
                    Move(Game.BoxPos,BoxSquares,Succ(Game.BoxCount)*SizeOf(Game.BoxPos[0])); // copy the current box squares to the worker thread
                    Move(Game.DeadlockSets.Capacity,DeadlockSetCapacities,Succ(Game.DeadlockSets.Count)*SizeOf(Game.DeadlockSets.Capacity[0])); // copy the current deadlock-set capacities to the worker thread
-                   MemoryBarrier;                                               // flush any pending memory updates before the worker thread receives its new work assignment in 'BasePosition'
                    BasePosition:=Position;                                      // this makes the worker thread start generating box configurations based on the current game position
                    //while BasePosition<>nil do SleepEx(0,False);               // test: wait until the worker thread has finished
 
