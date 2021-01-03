@@ -1719,8 +1719,10 @@ begin
 end;
 
 function  IntToStr(Number__:Int64):String;
+var AResult:ShortString;
 begin
-  Str(Number__,Result);
+  Str(Number__,AResult);
+  Result:=String(AResult);
 end;
 
 function  IntToStrWithPluralDependentText(Number__:Integer; const Text__:String):String;
@@ -2094,7 +2096,7 @@ begin // test function only; not in production
     end;
 end;
 
-function  SquareToChar(Square__:Integer):Char;
+function  SquareToChar(Square__:Integer):AnsiChar;
 var Col,Row:Integer;
 begin
   case Game.Board[Square__] and (PLAYER+BOX+GOAL+WALL) of
@@ -3012,7 +3014,7 @@ begin
   Result:='';
   BoardToTextLines(BoardAsTextLines);
   for Row:=1 to Game.BoardHeight do begin
-      s:=BoardAsTextLines[Row];
+      s:=String(BoardAsTextLines[Row]);
       if Length(s)>Game.BoardWidth then s:=Copy(s,1,Game.BoardWidth); {this shouldn't happen}
       while Length(s)<Game.BoardWidth do s:=s+SPACE;
       if   Result<>'' then
@@ -9980,7 +9982,7 @@ var BoxNo:Integer; StartTimeMS:TTimeMS;
     end; {CalculateRooms__}
 
     procedure ShowRooms;
-    var i,Col,Row,Square:Integer; s:String; BoardAsTextLines:TBoardAsTextLines;
+    var i,Col,Row,Square:Integer; s:AnsiChar; BoardAsTextLines:TBoardAsTextLines;
     begin
       with Game do begin
         for i:=1 to BoxCount do Dec(Board[BoxPos[i]],BOX);
@@ -9996,8 +9998,8 @@ var BoxNo:Integer; StartTimeMS:TTimeMS;
                 if i=0 then
                    BoardAsTextLines[Row]:=BoardAsTextLines[Row]+SquareToChar(Square)
                 else begin
-                   if        i<= 9 then s:=IntToStr(i)
-                   else if   i<=36 then s:=Chr(Ord('A')+i-10)
+                   if        i<= 9 then s:=AnsiChar(Ord('0')+i)
+                   else if   i<=36 then s:=AnsiChar(Ord('A')+i-10)
                         else s:='%'; // depict the remaining rooms as a rest group
                    BoardAsTextLines[Row]:=BoardAsTextLines[Row]+s;
                    end;
