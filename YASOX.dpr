@@ -48,8 +48,11 @@ You should have received a copy of the GNU General Public License along with thi
   {$DEFINE PLUGIN_MODULE}
 {$ENDIF}
 
-{$DEFINE DELPHI}                               {compiler: use only one of these: DELPHI of FPC}
+{///$DEFINE DELPHI}                            {compiler: use only one of these: DELPHI of FPC}
 {///$DEFINE FPC}                               {compiler: use only one of these: DELPHI of FPC}
+{$IFNDEF FPC}                                  {compiler: assume Delphi if not FPC}
+  {$DEFINE DELPHI}
+{$ENDIF}
 
 {$DEFINE WINDOWS}                              {use this on the Windows platform only}
 
