@@ -10849,8 +10849,8 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                       }
                       CurrentPosition      :=Successor;
                       end
-                   else
-                      Result:=False; {numeric overflow of the field holding the number of moves}
+                   (*else
+                      Result:=False; {numeric overflow of the field holding the number of moves}*)
                    end
               else Result:=False;
               end
@@ -11093,7 +11093,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                     Position__:=FreeList;                                       {get next free item}
                     FreeList  :=FreeList^.HashBucket.Next;                      {the free-list uses 'HashBucket.Next' for linking}
                     end
-            else if False and                                                   {'False': recycling the nodes one by one is disabled; the time overhead is too big, so it's better to purge all positions and start a new search based upon the best position}
+            (*else if False and                                                   {'False': recycling the nodes one by one is disabled; the time overhead is too big, so it's better to purge all positions and start a new search based upon the best position}
                     (OpenPositions.Count<>0) and
                     (SearchStatistics.ReuseCount<High(SearchStatistics.ReuseCount)) then begin
                     Position__:=OPENWorstUnprotected;
@@ -11120,7 +11120,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                        Position__:=FreeList;                                    {get next free item ('TTRemove' may recurse, in effect putting several nodes on the free-list}
                        FreeList  :=FreeList^.HashBucket.Next;                   {the free-list uses 'HashBucket.Next' for linking}
                        end;
-                    end
+                    end*)
             else    begin Position__:=nil;                                      {the transposition-table is full}
                           //if Optimizer.IterationResult then
                           //   OPENClear;                                       {restart the search with a purged transposition table}
