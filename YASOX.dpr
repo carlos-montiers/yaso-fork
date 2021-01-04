@@ -187,7 +187,8 @@ const
 const
   MAX_BOARD_WIDTH          = 70;
   MAX_BOX_COUNT            = 1023;             {limited by the slot 'BoxNo' in 'TMove'; must be a 2^N-1 number where 'N' is an integer > 0, so the value can be used as a bit mask to isolate a box number or a goal number}
-  MAX_HISTORY_BOX_MOVES    = 100; {600;}       {actually, it's pushes, not moves; originally it was limited by stack-size, but the tables for the recursive search are now allocated outside the stack; each +100 pushes cost approx. 1 MiB extra static data area}
+  MAX_HISTORY_BOX_MOVES    = 100; {600;}       {actually, it's pushes, not moves; originally it was limited by stack-size, but the tables for the recursive search are now allocated outside the stack;}
+                                               {each +100 pushes cost approx. 1 MiB extra static data area}
   MAX_OPTIMIZER_SEARCH_DEPTH
                            = 99;               {must be < 'MAX_HISTORY_BOX_MOVES' div 4}
   MAX_ROOM_COUNT           = High(UInt8);      {maximum number of rooms on the board}
@@ -3646,7 +3647,8 @@ begin {precondition: Solver.SearchStates[PlayersReachableSquaresIndex__].Players
                                  and
                                  ((not (dsfTestForFreezingSquare in SetFlags))  {'True': it's known from the precalculation, that when the squares in the freeze set have been filled, then the boxes at these squares have frozen}
                                   or
-                                  IsAFreezingMove({FromSquare}0,ToSquare,True,Game.Board,Game.FreezeTestTimeStamps)  {'True': moving a box to the single square in the freeze set causes the box to freeze; ('0' instead of 'FromSquare' because the box has already been moved)}
+                                  IsAFreezingMove({FromSquare}0,ToSquare,True,Game.Board,Game.FreezeTestTimeStamps)  {'True': moving a box to the single square in the freeze set causes the box to freeze;}
+                                                                                                                     { ('0' instead of 'FromSquare' because the box has already been moved)}
                                  ) then begin
                                  Result:=False;
 {
