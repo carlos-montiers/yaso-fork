@@ -68,7 +68,9 @@ You should have received a copy of the GNU General Public License along with thi
   {$M 1048576,0}                               {stack size, minimum 1 MiB}
 {$ENDIF}
 
-{$DEFINE X86_32}                               {the program is implemented as a 32-bit version}
+{$IFDEF CPU386}
+  {$DEFINE X86_32}                             {the program is implemented as a 32-bit version}
+{$ENDIF}
 
 {$DEFINE LIGHTWEIGHT_DEADLOCK_GENERATION}      {this generates a reasonable number of deadlocks and works pretty fast}
 
@@ -123,6 +125,7 @@ const
   ONE_THOUSAND             = 1000;
 
   ONE_MEBI                 = ONE_KIBI*ONE_KIBI;                                 {"mebi" used to be "mega" before year 2000}
+  ONE_GIBI                 = Int64(ONE_MEBI*ONE_KIBI);
   ONE_MILLION              = ONE_THOUSAND*ONE_THOUSAND;
 
   SIXTEEN_KIBI             = 16*ONE_KIBI;
@@ -137,14 +140,14 @@ type                                           {first some number types}
   Int32                    = Integer;          {in Delphi4,              'Integer'   means signed   32 bit integer, but it's problematic to use a term like that with newer processors}
   UInt16                   = Word;             {for historical reasons,  'Word'      means unsigned 16 bit integer in Delphi4, but it's problematic to use a term like that with newer processors}
   UInt32                   = Cardinal;         {for historical reasons,  'Cardinal'  means unsigned 32 bit integer in Delphi4, but it's problematic to use a term like that with newer processors}
-  UInt                     = Cardinal;         {unsigned machine word integer; must be the same size as a pointer}
+  UInt                     = UIntPtr;          {unsigned machine word integer; must be the same size as a pointer}
 
   TTimeMS                  = {$IFDEF WINDOWS} DWORD; {$ELSE} UInt32; {$ENDIF}
 
   {operating system types}
-  TMemoryAddress           = Cardinal;
-  TMemorySize              = Cardinal;
-  TSignedMemorySize        = Integer; // memory size as a signed number
+  TMemoryAddress           = UIntPtr;
+  TMemorySize              = UInt;
+  TSignedMemorySize        = IntPtr;  // memory size as a signed number
   TThreadIdentifier        = DWORD;
   TThreadSuspendCount      = DWORD;
   TWaitResult              = DWORD;
@@ -428,12 +431,16 @@ const
   MAX_SINGLE_STEP_MOVES    = MAX_BOARD_WIDTH*MAX_BOARD_HEIGHT+DIRECTION_COUNT*MAX_BOX_COUNT;
   MAX_THREAD_COUNT         = 1;                {given the other limitations of the optimizer it probably doesn't make sense to activate too many processors}
   MAX_TRANSPOSITION_TABLE_BYTE_SIZE            {limit the transposition table byte size to a signed integer and leave some memory free for other purposes}
-                           : Integer
+                           : UInt              {for 64-bit}
                            =
                            {$IFDEF PLUGIN_MODULE}
                              (MaxInt div 10) * 9; {only use 90% of the total memory address space; the host program might run other memory-consuming tasks in parallel with the plug-in}
                            {$ELSE}
-                             MaxInt - 16*ONE_MEBI;
+                              {$IFDEF X86_32}
+                                MaxInt - 16*ONE_MEBI;
+                              {$ELSE}
+                                32*ONE_GIBI;   {32GiB arbitrary limit}
+                              {$ENDIF}
                            {$ENDIF}
   MAX_VICINITY_SQUARES     = {MAX_BOARD_WIDTH*MAX_BOARD_HEIGHT} 999; {the only reason for the 999-limit is that it allows a settings window to operate with 3-digits only for the spin-edit controls}
   MIN_BOX_LIMIT_FOR_DYNAMIC_DEADLOCK_SETS      {calculating and storing dynamic deadlock sets are time-consuming operations; the minimum box limit must be reasonably small}
@@ -1013,7 +1020,7 @@ type
     HashBucketCount        : Integer;    {vector-length of 'HashBuckets'; it must must be a power of 2 so masking with ('HashBucketCount'-1) produces a proper hash-bucket index}
     HashBucketMask         : Integer;    {'HashBucketCount' - 1}
     HashBuckets            : PPositionPointersVector; {the vector length must be a power of 2}
-    MemoryByteSize         : Cardinal;   {total memory size in bytes, including 'Positions' and 'HashBuckets'}
+    MemoryByteSize         : UInt;       {total memory size in bytes, including 'Positions' and 'HashBuckets'}
     OpenPositions          : TOpenPositions;
     PartiallyExpandedPositionsList       {linked list of positions not fully expanded by the solver search; if the search doesn't find a solution, it may try a full expansion of these positions later}
                            : PPosition;
@@ -1237,7 +1244,7 @@ type
           Root:PMemoryBlock;                                                    // the first block in the list
         end;
         PQueueItem=^TQueueItem;
-        TQueueItem=packed record                                                // items on the open-queue (despite its name, the 'open-queue' contains visited nodes as well as unvisited nodes)
+        TQueueItem=record                                                       // items on the open-queue (despite its name, the 'open-queue' contains visited nodes as well as unvisited nodes)
           GameState:TGameState;
           PushAncestor:PQueueItem;                                              // the most recent push on the path leading to this node
         end;
@@ -1247,7 +1254,7 @@ type
         // a span-datastructure contains the start of a sequence of items having
         // the same number of moves and/or pushes
         PSpanItem=^TSpanItem;
-        TSpanItem=packed record
+        TSpanItem=record
          FirstItem:PQueueItem;                                                  // a span consists of the items from 'FirstItem' up to, but not including the first item for the next span
          ItemCount:Cardinal;
         end;
@@ -1404,15 +1411,15 @@ var
   {exported functions}
 
   function  BoardToText(const LineTerminator__:String):String;
-  function  CalculateDefaultMemoryByteSize:Integer;
+  function  CalculateDefaultMemoryByteSize:UInt;
   function  ColRowToSquare(Col__,Row__:Integer):Integer;
   function  CreateLogFile(const FileName__:String):Boolean;
   function  Finalize:Boolean;
   function  GameHistoryMovesAsText:String;
-  function  GetPhysicalMemoryByteSize:UInt32;
+  function  GetPhysicalMemoryByteSize:UInt;
   procedure InitializeBoard(BoardWidth__,BoardHeight__:Integer; FillSquares__:Boolean);
   function  InitializeGame(var PluginResult__:TPluginResult; var ErrorText__:String):Boolean;
-  function  Initialize(MemoryByteSize__:Cardinal;
+  function  Initialize(MemoryByteSize__:UInt;
                        PushCountLimit__:Int64;
                        DepthLimit__,
                        BackwardSearchDepthLimit__:Cardinal;
@@ -1469,15 +1476,19 @@ type
 var
   SystemInformation            : TSystemInformation;
 
-function  GetAvailablePhysicalMemoryByteSize:Cardinal;
+function  GetAvailablePhysicalMemoryByteSize:UInt;
 {$IFDEF WINDOWS}
   var MemoryStatusEx:TMemoryStatusEx;
   begin
     MemoryStatusEx.dwLength:=SizeOf(MemoryStatusEx);
     GlobalMemoryStatusEx(MemoryStatusEx);
+  {$IFDEF X86_32}
     if   MemoryStatusEx.ullAvailPhys<=High(Result) then
          Result:=MemoryStatusEx.ullAvailPhys
     else Result:=High(Result);
+  {$ELSE}
+    Result:=MemoryStatusEx.ullAvailPhys
+  {$ENDIF}
   end;
 {$ELSE}
   begin
@@ -1485,15 +1496,19 @@ function  GetAvailablePhysicalMemoryByteSize:Cardinal;
   end;
 {$ENDIF}
 
-function  GetAvailableUserMemoryByteSize:Cardinal;
+function  GetAvailableUserMemoryByteSize:UInt;
 {$IFDEF WINDOWS}
   var MemoryStatusEx:TMemoryStatusEx;
   begin
     MemoryStatusEx.dwLength:=SizeOf(MemoryStatusEx);
     GlobalMemoryStatusEx(MemoryStatusEx);
+  {$IFDEF X86_32}
     if   MemoryStatusEx.ullAvailVirtual<=High(Result) then
          Result:=MemoryStatusEx.ullAvailVirtual
     else Result:=High(Result);
+  {$ELSE}
+    Result:=MemoryStatusEx.ullAvailVirtual
+  {$ENDIF}
   end;
 {$ELSE}
   begin
@@ -1501,15 +1516,19 @@ function  GetAvailableUserMemoryByteSize:Cardinal;
   end;
 {$ENDIF}
 
-function  GetPhysicalMemoryByteSize:Cardinal;
+function  GetPhysicalMemoryByteSize:UInt;
 {$IFDEF WINDOWS}
   var MemoryStatusEx:TMemoryStatusEx;
   begin
     MemoryStatusEx.dwLength:=SizeOf(MemoryStatusEx);
     GlobalMemoryStatusEx(MemoryStatusEx);
+  {$IFDEF X86_32}
     if   MemoryStatusEx.ullTotalPhys<=High(Result) then
          Result:=MemoryStatusEx.ullTotalPhys
     else Result:=High(Result);
+  {$ELSE}
+    Result:=MemoryStatusEx.ullTotalPhys
+  {$ENDIF}
   end;
 {$ELSE}
   begin
@@ -1522,18 +1541,18 @@ procedure GetSystemInformation(
 // collects operating system information and process information used by the
 // application
 {$IFDEF WINDOWS}
-  var MemoryStatus : TMemoryStatus;
+  var MemoryStatusEx : TMemoryStatusEx;
       SystemInformation : TSystemInfo;
   begin
     with SystemInformation__ do begin
       CurrentProcess              := GetCurrentProcess;
       GetSystemInfo     ( SystemInformation );
-      MemoryStatus.dwLength       := SizeOf( MemoryStatus ); // set before call
-      GlobalMemoryStatus( MemoryStatus );
+      MemoryStatusEx.dwLength     := SizeOf( MemoryStatusEx ); // set before call
+      GlobalMemoryStatusEx( MemoryStatusEx );
 
       MemoryAllocationGranularity := SystemInformation.dwAllocationGranularity;
       MemoryPageByteSize          := SystemInformation.dwPageSize;
-      PhysicalMemoryByteSize      := MemoryStatus     .dwTotalPhys;
+      PhysicalMemoryByteSize      := MemoryStatusEx   .ullTotalPhys;
       end;
   end;
 {$ELSE}
@@ -1805,15 +1824,19 @@ begin // returns the number of the box at the square 'SquareNo__', if any
          end;
 end;
 
-function  CalculateDefaultMemoryByteSize:Integer;
-var PhysicalMemoryBytes,PhysicalMemoryMiB:Cardinal;
+function  CalculateDefaultMemoryByteSize:UInt;
+var PhysicalMemoryBytes:UInt;PhysicalMemoryMiB:Cardinal;
 begin
   PhysicalMemoryBytes:=GetPhysicalMemoryByteSize;
   if PhysicalMemoryBytes<High(PhysicalMemoryBytes) - (ONE_MEBI div 2) then Inc(PhysicalMemoryBytes,(ONE_MEBI div 2)); // prepare to round up
-  if PhysicalMemoryBytes>Cardinal(MaxInt) then PhysicalMemoryBytes:=Cardinal(MaxInt); // limit the memory byte size to an unsigned integer
+  if PhysicalMemoryBytes>UInt(High(IntPtr)) then PhysicalMemoryBytes:=High(IntPtr); // limit the memory byte size to an unsigned integer
   PhysicalMemoryMiB:=PhysicalMemoryBytes div ONE_MEBI;
   if   PhysicalMemoryMiB<>0 then
+    {$IFDEF X86_32}
        Result:=Min(High(Result) div ONE_MEBI,Max(0,Succ(PhysicalMemoryMiB) div 2))*ONE_MEBI // 'div 2': only use half of the physical memory
+    {$ELSE}
+       Result:=(Succ(PhysicalMemoryMiB) div 2)*ONE_MEBI
+    {$ENDIF}
   else Result:=DEFAULT_MEMORY_BYTE_SIZE;
 end;
 
@@ -2165,8 +2188,8 @@ end;
 
 function  GetCommandLineParameters(var InputFileName__:String;
                                    var FirstLevelNo__,
-                                       LastLevelNo__,
-                                       MemoryByteSize__:Cardinal;
+                                       LastLevelNo__:Cardinal;
+                                   var MemoryByteSize__:UInt;
                                    var PushCountLimit__:Int64;
                                    var DepthLimit__,
                                        BackwardSearchDepthLimit__:Cardinal;
@@ -2332,24 +2355,26 @@ begin {a simple and not fool-proof implementation}
                                      else if (Length(s)>=4) and
                                              ((s[4]='m') or (s[4]='M')) then begin {Memory}
                                              MemoryByteSize__   :=GetPhysicalMemoryByteSize;
-                                             if MemoryByteSize__> Cardinal(MAX_TRANSPOSITION_TABLE_BYTE_SIZE) then
-                                                MemoryByteSize__:=Cardinal(MAX_TRANSPOSITION_TABLE_BYTE_SIZE); // limit the transposition table byte size to a signed integer and leave some memory for other purposes
-                                             Result:=GetParameter(MemoryByteSize__,
+                                             if MemoryByteSize__> MAX_TRANSPOSITION_TABLE_BYTE_SIZE then
+                                                MemoryByteSize__:=MAX_TRANSPOSITION_TABLE_BYTE_SIZE; // limit the transposition table byte size to a signed integer and leave some memory for other purposes
+                                             Result:=GetParameter(c,
                                                                   0,
                                                                  {$IFDEF WINDOWS}
                                                                    MemoryByteSize__,
                                                                  {$ELSE}
                                                                    MAX_TRANSPOSITION_TABLE_BYTE_SIZE,
                                                                  {$ENDIF}
-                                                                  ONE_MEBI,ItemIndex);
+                                                                  1,ItemIndex);
+                                             if Result then
+                                                    MemoryByteSize__:=UInt(c)*ONE_MEBI;
                                              if (not Result) and (Pred(ItemIndex)<=ParamCount) then begin
                                                 s:=ParamStr(Pred(ItemIndex));
                                                 if (s<>'') and ((s[1]='a') or (s[1]='A')) then begin
                                                    {$IFDEF WINDOWS}
                                                      MemoryByteSize__   :=GetAvailablePhysicalMemoryByteSize;
-                                                     if MemoryByteSize__> Cardinal(MAX_TRANSPOSITION_TABLE_BYTE_SIZE) then
-                                                        MemoryByteSize__:=Cardinal(MAX_TRANSPOSITION_TABLE_BYTE_SIZE); // limit the transposition table byte size to a signed integer and leave some memory for other purposes
-                                                     Result:={(MemoryByteSize__>=0) and} (MemoryByteSize__<=MaxInt-ONE_MEBI);
+                                                     if MemoryByteSize__> MAX_TRANSPOSITION_TABLE_BYTE_SIZE then
+                                                        MemoryByteSize__:=MAX_TRANSPOSITION_TABLE_BYTE_SIZE; // limit the transposition table byte size to a signed integer and leave some memory for other purposes
+                                                     Result:=True;
                                                    {$ELSE}
                                                      Msg('"-memory available": This parameter is only implemented in the Windows version.','');
                                                    {$ENDIF}
@@ -4743,14 +4768,14 @@ function  OPENListLength(Position__:PPosition):Integer;
 var BasePosition:PPosition;
 begin {open positions: number of nodes in the chain having 'Position__' as a member}
   Result:=0;
-  Position__:=PPosition(Cardinal(Position__) {and POSITION_POINTER_MASK});
+  Position__:=PPosition(UIntPtr(Position__) {and POSITION_POINTER_MASK});
   if Position__<>nil then begin
      BasePosition:=Position__;
      repeat Inc(Result);
-            Position__:=PPosition(Cardinal(Position__^.ScoreBucket.Next) {and POSITION_POINTER_MASK});
-            //if Position__<>PPosition(Cardinal(Position__^.ScoreBucket.Prev) {and POSITION_POINTER_MASK})^.ScoreBucket.Next then
+            Position__:=PPosition(UIntPtr(Position__^.ScoreBucket.Next) {and POSITION_POINTER_MASK});
+            //if Position__<>PPosition(UIntPtr(Position__^.ScoreBucket.Prev) {and POSITION_POINTER_MASK})^.ScoreBucket.Next then
             //   Msg(TEXT_INTERNAL_ERROR+': "OPENListLength" (links) '+IntToStr(Solver.PushCount),TEXT_APPLICATION_TITLE);
-            //if Position__^.Score<>PPosition(Cardinal(Position__^.ScoreBucket.Prev) {and POSITION_POINTER_MASK})^.Score then
+            //if Position__^.Score<>PPosition(UIntPtr(Position__^.ScoreBucket.Prev) {and POSITION_POINTER_MASK})^.Score then
             //   Msg(TEXT_INTERNAL_ERROR+': "OPENListLength" (score) '+IntToStr(Solver.PushCount),TEXT_APPLICATION_TITLE);
             //if (Ord(Position__^.Move.Direction) and POSITION_OPEN_TAG)=0 then
             //   Msg(TEXT_INTERNAL_ERROR+': "OPENListLength" (tag) '+IntToStr(Solver.PushCount),TEXT_APPLICATION_TITLE);
@@ -4763,10 +4788,10 @@ var BasePosition:PPosition;
 begin {open positions: number of nodes in the chain having 'Position__' as a member}
   Result:=0;
   if Position__<>nil then begin
-     Position__:=PPosition(Integer(Position__) {and POSITION_POINTER_MASK});
+     Position__:=PPosition(UIntPtr(Position__) {and POSITION_POINTER_MASK});
      BasePosition:=Position__;
      repeat Inc(Result);
-            Position__:=PPosition(Integer(Position__^.ScoreBucket.Prev) {and POSITION_POINTER_MASK});
+            Position__:=PPosition(UIntPtr(Position__^.ScoreBucket.Prev) {and POSITION_POINTER_MASK});
      until  Position__=BasePosition;
      end;
 end;
@@ -4941,14 +4966,14 @@ begin //transposition table: returns 'True' if 'Position__' is on the path leadi
     else Result:=True;
 end;
 
-function  TTInitialize(MemoryByteSize__:Cardinal):Boolean;
+function  TTInitialize(MemoryByteSize__:UInt):Boolean;
 var i,j:Integer; PositionSize,HashBucketVectorSize,HashBucketItemSize:Cardinal;
 begin
 //MemoryByteSize__:=256*ONE_MEBI;
   Result                    :=False;
   FillChar(Positions,SizeOf(Positions),0);
 //MemoryByteSize__          :=Min(MemoryByteSize__,High(Positions.MemoryByteSize));
-  MemoryByteSize__          :=Min(MemoryByteSize__,MaxInt);
+//MemoryByteSize__          :=Min(MemoryByteSize__,High(IntPtr));
   PositionSize              :=SizeOf(Positions.Positions^[Low(Positions.Positions^)]);
   HashBucketItemSize        :=SizeOf(Positions.HashBuckets^[Low(Positions.HashBuckets^)]);
 
@@ -4991,7 +5016,7 @@ begin
         HashBuckets   :=PPositionPointersVector(UInt(Positions)+UInt(Capacity*PositionSize)); {reserve the upper part of the allocated memory for the hash-buckets}
         Result        :=Capacity<>0;
 
-        Optimizer.PositionCapacity:=(Capacity*SizeOf(TPosition)) div SizeOf(TOptimizerPosition); {the optimizer used an extended position record, hence, the position capacity is different for the optimizer}
+        Optimizer.PositionCapacity:=(UInt(Capacity)*SizeOf(TPosition)) div SizeOf(TOptimizerPosition); {the optimizer used an extended position record, hence, the position capacity is different for the optimizer}
 
         //Optimizer.PositionCapacity:=5000;
         end;
@@ -5020,10 +5045,10 @@ var BasePosition:PPosition;
 begin {transposition table: number of nodes in the chain having 'Position__' as a member}
   Result:=0;
   if Position__<>nil then begin
-     Position__:=PPosition(Integer(Position__) {and POSITION_POINTER_MASK});
+     Position__:=PPosition(UIntPtr(Position__) {and POSITION_POINTER_MASK});
      BasePosition:=Position__;
      repeat Inc(Result);
-            Position__:=PPosition(Integer(Position__^.HashBucket.Next) {and POSITION_POINTER_MASK});
+            Position__:=PPosition(UIntPtr(Position__^.HashBucket.Next) {and POSITION_POINTER_MASK});
      until  (Position__=nil) or (Position__=BasePosition);
      end;
 end;
@@ -11569,11 +11594,11 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
          Next:=POptimizerPosition(Positions);
          Top :=Next; Inc(Top,Pred(Min(Optimizer.PositionCapacity,AlignedItemsCount__)));  {'Inc': it's easier to let the compiler calculate the address of the last item than doing it manually}
 
-         repeat while (Cardinal(Next)<=Cardinal(Top)) and                       {find leftmost free node in the transposition table, only looking at the left-justified items}
+         repeat while (UIntPtr(Next)<=UIntPtr(Top)) and                         {find leftmost free node in the transposition table, only looking at the left-justified items}
                       ((Ord(Next^.Position.Move.Direction) and POSITION_PATH_TAG)<>0) do {'<>0': this slot already contains a position which is a member of the best path}
                       Inc(Next);
 
-                if    (Cardinal(p)>Cardinal(Next)) and
+                if    (UIntPtr(p)>UIntPtr(Next)) and
                       (UninitializedItemCount>0) then begin                     {'True': move this position to the first free slot to the left}
                       if p^.Parent   <>nil then p^.Parent   ^.Successor:=PPosition(Next);
                       if p^.Successor<>nil then p^.Successor^.Parent   :=PPosition(Next);
@@ -11649,7 +11674,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
 
                 p:=p^.Successor;                                                {get ready to process the successor position, if any}
 
-                //if Cardinal(p)>=Cardinal(UnalignedItems) then begin           {'True': this item wasn't created by 'TTAdd'; precondition: the root item cannot be an unaligned one, and all unaligned items must be in ascending memory address order}
+                //if UIntPtr(p)>=UIntPtr(UnalignedItems) then begin             {'True': this item wasn't created by 'TTAdd'; precondition: the root item cannot be an unaligned one, and all unaligned items must be in ascending memory address order}
                 //   Inc(Next); Top:=Next;                                      {advance to the next free slot}
                 //   Top:=Next;                                                 {disable the search for a free slot at the top of the loop}
                 //   end;
@@ -11880,7 +11905,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
     while p<>nil do with POptimizerPosition(p)^ do with Position do begin
       SetPosition(p);
       ShowBoard;
-      Writeln(Game.HashValue,COLON,Game.PlayerPos,SPACE,SPACE,Cardinal(p),COLON,TTIndexOf(p));
+      Writeln(Game.HashValue,COLON,Game.PlayerPos,SPACE,SPACE,UIntPtr(p),COLON,TTIndexOf(p));
       Write(GameMetricsAsText);
       Readln;
       p:=Parent;
@@ -14505,13 +14530,23 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
 
       // end of Bloom filter functions
 
-      function  ByteAlignment(ByteAlignment__:Integer; var Memory__:Pointer):Integer;
-      begin // aligns 'Memory__' to the memory alignment boundary; returns the number of bytes added for proper alignment;
-           // preconditions: 1) 'ByteAlignment__' is a '2^n' integer where 'n' >=0; 2) Cardinal('Memory__') + 'MemoryAlignment' - 1 is a valid memory address
-        Result:=Cardinal(Memory__) and (ByteAlignment__-1);
+      function  ByteAlignment(ByteAlignment__:Integer; var Size__:Cardinal):Integer;overload;
+      begin // aligns 'Size__' to the memory alignment boundary; returns the number of bytes added for proper alignment;
+           // preconditions: 1) 'ByteAlignment__' is a '2^n' integer where 'n' >=0; 2) 'Size__' + 'MemoryAlignment' - 1 does not overflow
+        Result:=Size__ and (ByteAlignment__-1);
         if Result<>0 then begin
            Result:=ByteAlignment__-Result;
-           Cardinal(Memory__):=Cardinal(Memory__)+Cardinal(Result);
+           Size__:=Size__+Cardinal(Result);
+           end;
+      end; // ByteAlignment
+
+      function  ByteAlignment(ByteAlignment__:Integer; var Memory__:Pointer):Integer;overload;
+      begin // aligns 'Memory__' to the memory alignment boundary; returns the number of bytes added for proper alignment;
+           // preconditions: 1) 'ByteAlignment__' is a '2^n' integer where 'n' >=0; 2) UIntPtr('Memory__') + 'MemoryAlignment' - 1 is a valid memory address
+        Result:=UIntPtr(Memory__) and (ByteAlignment__-1);
+        if Result<>0 then begin
+           Result:=ByteAlignment__-Result;
+           UIntPtr(Memory__):=UIntPtr(Memory__)+Cardinal(Result);
            end;
       end; // ByteAlignment
 
@@ -14522,7 +14557,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
           if   High(Result)-A>=B then begin
                Result:=A+B;
                if   Result<High(Result)-MEMORY_ALIGNMENT_BYTES then
-                    ByteAlignment(MEMORY_ALIGNMENT_BYTES,Pointer(Result))
+                    ByteAlignment(MEMORY_ALIGNMENT_BYTES,Result)
                else Result:=High(Result);
                end
           else Result:=High(Result);
@@ -14665,7 +14700,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                               NewDataStructuresByteSize+NewVisitedByteSize
                              ) then begin
                              Memory:=GetMemory(ByteSize,False);
-                             if ((Cardinal(Memory) and RED_BLACK_TREE_ITEM_COLOR_RED)<>0)
+                             if ((UIntPtr(Memory) and RED_BLACK_TREE_ITEM_COLOR_RED)<>0)
                                 or
                                 {$WARNINGS OFF}
                                   {warning: Comparison always evaluates to True}
@@ -14684,9 +14719,9 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
 
               Result:=Memory;
               if Result<>nil then with Result^ do begin                         // 'True': there is enough memory for the new item
-                 Cardinal(Memory):=Cardinal(Memory)+SizeOf(TBinaryTreeItem);    // allocate the new tree item from the bottom of the memory block
+                 UIntPtr(Memory):=UIntPtr(Memory)+SizeOf(TBinaryTreeItem);      // allocate the new tree item from the bottom of the memory block
                  ByteSize:=ByteSize-Cardinal(SizeOf(TBinaryTreeItem))-Cardinal(BoxConfigurationByteSize); // reserve bytes for the tree item as well as the box configuration
-                 BoxConfiguration:=PBoxConfiguration(Cardinal(Memory)+ByteSize);  // allocate memory for the box configuration from the top of the memory block; that way, proper aligment of tree items nodes aren't destroyed by the box configurations
+                 BoxConfiguration:=PBoxConfiguration(UIntPtr(Memory)+ByteSize); // allocate memory for the box configuration from the top of the memory block; that way, proper aligment of tree items nodes aren't destroyed by the box configurations
                  Move(BoxConfiguration__,BoxConfiguration^,BoxConfigurationByteSize); // store the box configuration belonging to this tree item
                  Left :=nil;                                                    // 'nil': the new item is a leaf node
                  Right:=nil;                                                    // 'nil': the new item is a leaf node
@@ -14698,29 +14733,29 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
           begin // rotates the tree item 'Item__'  left or right, depending on the parameter 'RotateRight__'
                 // returns the item which has been rotated upwards; the rotated items are updated with appropriate red/black colors
                 // preconditions: the rotated items are present, i.e., non-nil, and 'Parent__' is the parent of 'Item__'
-            Result                           := PBinaryTreeItem(Cardinal(Item__^.Links[not RotateRight__]) and (not RED_BLACK_TREE_ITEM_COLOR_RED));
-            Item__^.Links[not RotateRight__] := PBinaryTreeItem(Cardinal(Result^.Links[    RotateRight__]) and (not RED_BLACK_TREE_ITEM_COLOR_RED));
+            Result                           := PBinaryTreeItem(UIntPtr(Item__^.Links[not RotateRight__]) and (not RED_BLACK_TREE_ITEM_COLOR_RED));
+            Item__^.Links[not RotateRight__] := PBinaryTreeItem(UIntPtr(Result^.Links[    RotateRight__]) and (not RED_BLACK_TREE_ITEM_COLOR_RED));
             Result^.Links[    RotateRight__] := Item__;
 
             if   Item__<>Tree__.Root then begin
                  if   Item__=Parent__^.Right then
                       Parent__^.Right:=Result
-                 else Parent__^.Left:=PBinaryTreeItem(Cardinal(Result) or (Cardinal(Parent__^.Left) and RED_BLACK_TREE_ITEM_COLOR_RED));
+                 else Parent__^.Left:=PBinaryTreeItem(UIntPtr(Result) or (UIntPtr(Parent__^.Left) and RED_BLACK_TREE_ITEM_COLOR_RED));
                  end
             else Tree__.Root:=Result; // keep the tree root item updated
 
-            Item__^.Left:=PBinaryTreeItem(Cardinal(Item__^.Left) or       RED_BLACK_TREE_ITEM_COLOR_RED);  // the item which has been rotated downwards is colored red
-            Result^.Left:=PBinaryTreeItem(Cardinal(Result^.Left) and (not RED_BLACK_TREE_ITEM_COLOR_RED)); // the item which has been rotated upwards   is colored black
+            Item__^.Left:=PBinaryTreeItem(UIntPtr(Item__^.Left) or       RED_BLACK_TREE_ITEM_COLOR_RED);  // the item which has been rotated downwards is colored red
+            Result^.Left:=PBinaryTreeItem(UIntPtr(Result^.Left) and (not RED_BLACK_TREE_ITEM_COLOR_RED)); // the item which has been rotated upwards   is colored black
           end; // BTRotate
 
         begin // 'BTAdd'; returns 'True' if the box configuration is added to the tree; the new item, or the already existing item, is returned in 'Item__'
             Item__:=Tree__.Root; Depth:=0; Parents[0]:=nil; i:=-1;
             while (Item__<>nil) and (i<>0) and (Depth<High(Parents)) do begin   // 'i<>0': the item hasn't been found in the tree
               Inc(Depth); Parents[Depth]:=Item__;                               // remember what will be the parent item after descending one step further down the tree
-              //if (Cardinal(Item__) and RED_BLACK_TREE_ITEM_COLOR_RED)<>0 then
+              //if (UIntPtr(Item__) and RED_BLACK_TREE_ITEM_COLOR_RED)<>0 then
               //   InternalError('BTAdd');
               i:=CompareBoxConfigurations(BoxConfiguration__,Item__^.BoxConfiguration^);
-              if        i<0 then Item__:=PBinaryTreeItem(Cardinal(Item__^.Left) and (not RED_BLACK_TREE_ITEM_COLOR_RED))
+              if        i<0 then Item__:=PBinaryTreeItem(UIntPtr(Item__^.Left) and (not RED_BLACK_TREE_ITEM_COLOR_RED))
               else if   i>0 then Item__:=Item__^.Right;
               end;
             Result:=Item__=nil;
@@ -14738,37 +14773,37 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                   Parent:=Parents[Depth];
                   if   Parent<>nil then
                        if   i<0 then
-                            Parent^.Left :=PBinaryTreeItem(Cardinal(Parent^.Left)+Cardinal(Item__)) // '<0': the new item is less than the parent item; ('Cardinal(...)' keep the red-black tree item color, if any)
+                            Parent^.Left :=PBinaryTreeItem(UIntPtr(Parent^.Left)+UIntPtr(Item__)) // '<0': the new item is less than the parent item; ('UIntPtr(...)' keep the red-black tree item color, if any)
                        else Parent^.Right:=Item__                               // '>0': the new item is bigger than the parent item
                   else Tree__.Root:=Item__;                                     // this it the first item added to the tree
 //(*
                   // red-black tree updating, i.e., set item colors and rotate items to maintain the red-black tree properties
-                  Item__^     .Left:=PBinaryTreeItem(Cardinal(Item__^     .Left) or       RED_BLACK_TREE_ITEM_COLOR_RED ); // color the new item red
+                  Item__^     .Left:=PBinaryTreeItem(UIntPtr(Item__^     .Left) or       RED_BLACK_TREE_ITEM_COLOR_RED ); // color the new item red
                   Node:=Item__;
                   while (Node<>Tree__.Root) and
-                        ((Cardinal(Parents[Depth]^.Left) and RED_BLACK_TREE_ITEM_COLOR_RED)<>0) do begin // if the parent node is red, then it's necessary to check if any immediate successor nodes also are red
+                        ((UIntPtr(Parents[Depth]^.Left) and RED_BLACK_TREE_ITEM_COLOR_RED)<>0) do begin // if the parent node is red, then it's necessary to check if any immediate successor nodes also are red
                     Parent     :=Parents[Depth];
                     GrandParent:=Parents[Pred(Depth)]; // the grand parent node is guaranteed to exist because the root node always is black
 
                     IsRightBranch:=Parent=GrandParent^.Right;
-                    Uncle:=PBinaryTreeItem(Cardinal(GrandParent^.Links[not IsRightBranch]) and (not RED_BLACK_TREE_ITEM_COLOR_RED));
+                    Uncle:=PBinaryTreeItem(UIntPtr(GrandParent^.Links[not IsRightBranch]) and (not RED_BLACK_TREE_ITEM_COLOR_RED));
 
                     if (Uncle<>nil) and
-                       ((Cardinal(Uncle^.Left) and RED_BLACK_TREE_ITEM_COLOR_RED)<>0) then begin // the parent and its sibling are both red; swap their colors with the grandparent
-                       Parent     ^.Left:=PBinaryTreeItem(Cardinal(Parent     ^.Left) and (not RED_BLACK_TREE_ITEM_COLOR_RED)); // color the parent black
-                       Uncle      ^.Left:=PBinaryTreeItem(Cardinal(Uncle      ^.Left) and (not RED_BLACK_TREE_ITEM_COLOR_RED)); // color the uncle  black
-                       GrandParent^.Left:=PBinaryTreeItem(Cardinal(GrandParent^.Left) or       RED_BLACK_TREE_ITEM_COLOR_RED ); // color the grandparent red
+                       ((UIntPtr(Uncle^.Left) and RED_BLACK_TREE_ITEM_COLOR_RED)<>0) then begin // the parent and its sibling are both red; swap their colors with the grandparent
+                       Parent     ^.Left:=PBinaryTreeItem(UIntPtr(Parent     ^.Left) and (not RED_BLACK_TREE_ITEM_COLOR_RED)); // color the parent black
+                       Uncle      ^.Left:=PBinaryTreeItem(UIntPtr(Uncle      ^.Left) and (not RED_BLACK_TREE_ITEM_COLOR_RED)); // color the uncle  black
+                       GrandParent^.Left:=PBinaryTreeItem(UIntPtr(GrandParent^.Left) or       RED_BLACK_TREE_ITEM_COLOR_RED ); // color the grandparent red
                        Node             :=GrandParent; Dec(Depth,2);            // backtrack to the grandparent item on the path down to the new item
                        end
                     else begin
-                       if Cardinal(Node)=Cardinal(Parent^.Links[not IsRightBranch]) and (not RED_BLACK_TREE_ITEM_COLOR_RED) then
+                       if UIntPtr(Node)=UIntPtr(Parent^.Links[not IsRightBranch]) and (not RED_BLACK_TREE_ITEM_COLOR_RED) then
                           BTRotate(Tree__,Parent,GrandParent,IsRightBranch);
                        BTRotate(Tree__,GrandParent,Parents[Depth-2],not IsRightBranch);
                        Node:=Tree__.Root;                                       // update complete; terminate the 'while' loop
                        end;
                     end;
 
-                  Tree__.Root^.Left:=PBinaryTreeItem(Cardinal(Tree__.Root^.Left) and (not RED_BLACK_TREE_ITEM_COLOR_RED)); // color the root item black, thereby ensuring that the 'GrandParent' item exists in the preceding 'while' loop
+                  Tree__.Root^.Left:=PBinaryTreeItem(UIntPtr(Tree__.Root^.Left) and (not RED_BLACK_TREE_ITEM_COLOR_RED)); // color the root item black, thereby ensuring that the 'GrandParent' item exists in the preceding 'while' loop
 
                   //BTShowTree(Tree__);
                   //BTRedBlackTreeCheck(Tree__);
@@ -14805,7 +14840,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
           Result:=False; Item__:=Tree__.Root;
           while (Item__<>nil)  {and (not Result)} do begin                       // 'not Result': this is commented out; it's unnecessary because of the "quick-and-dirty" exit a few lines further down
             i:=CompareBoxConfigurations(BoxConfiguration__,Item__^.BoxConfiguration^);
-            if        i<0 then Item__:=PBinaryTreeItem(Cardinal(Item__^.Left) and (not RED_BLACK_TREE_ITEM_COLOR_RED))
+            if        i<0 then Item__:=PBinaryTreeItem(UIntPtr(Item__^.Left) and (not RED_BLACK_TREE_ITEM_COLOR_RED))
             else if   i>0 then Item__:=Item__^.Right
                  else begin Result:=True; exit;                                 // 'exit': quick-and-dirty exit when a matching box configuration has been found
                       end;
@@ -14825,7 +14860,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
             ListTail:=ListHead__;           // 'ListTail' points to the last node of the 'flattened' part of the tree, i.e., the part with no left branches
             Rest:=ListTail^.Right;          // 'Rest' always points to 'ListTail^.Right'
             while Rest<>nil do begin        // 'True': there are more nodes which haven't been 'flattened' yet, i.e., there may be more nodes having a left branch
-              L:=PBinaryTreeItem(Cardinal(Rest^.Left) and (not RED_BLACK_TREE_ITEM_COLOR_RED)); // get the left branch without its red-black tree item color flag
+              L:=PBinaryTreeItem(UIntPtr(Rest^.Left) and (not RED_BLACK_TREE_ITEM_COLOR_RED)); // get the left branch without its red-black tree item color flag
               Rest^.Left:=L;                // remove any red-black tree item colors from the node
               if L<>nil then begin          // 'True': the node has a left branch, 'flatten' it by rotating the left branch up into to list
 //               L:=Rest^.Left;             //  ListTail          ListTail
@@ -14894,7 +14929,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
           begin
             Result:=True; ItemCount__:=0; BlackHeight__:=0;
             if Item__<>nil then with Item__^ do begin
-               L:=PBinaryTreeItem(Cardinal(Left) and (not RED_BLACK_TREE_ITEM_COLOR_RED));
+               L:=PBinaryTreeItem(UIntPtr(Left) and (not RED_BLACK_TREE_ITEM_COLOR_RED));
                if L<>nil then begin
                   i:=CompareBoxConfigurations(BoxConfiguration^,L^.BoxConfiguration^);
                   if i<=0 then Result:=False;
@@ -14912,12 +14947,12 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
 
                ItemCount__  :=Succ(LeftCount+RightCount);
                BlackHeight__:=Max(LeftHeight,RightHeight);
-               if (Cardinal(Left) and RED_BLACK_TREE_ITEM_COLOR_RED)=0 then
+               if (UIntPtr(Left) and RED_BLACK_TREE_ITEM_COLOR_RED)=0 then
                   Inc(BlackHeight__)
                else begin
-                  if (L    <>nil) and ((Cardinal(L^    .Left) and RED_BLACK_TREE_ITEM_COLOR_RED)<>0) then
+                  if (L    <>nil) and ((UIntPtr(L^    .Left) and RED_BLACK_TREE_ITEM_COLOR_RED)<>0) then
                      Result:=False;
-                  if (Right<>nil) and ((Cardinal(Right^.Left) and RED_BLACK_TREE_ITEM_COLOR_RED)<>0) then
+                  if (Right<>nil) and ((UIntPtr(Right^.Left) and RED_BLACK_TREE_ITEM_COLOR_RED)<>0) then
                      Result:=False;
                   end;
                end;
@@ -14941,9 +14976,9 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                  Result:=TreeWalk(Right,Succ(Depth__));
                  for i:=1 to Depth__ do Write(SPACE,SPACE);
                  Write(Item__^.Key);
-                 if (Cardinal(Left) and RED_BLACK_TREE_ITEM_COLOR_RED)<>0 then Write('r');
+                 if (UIntPtr(Left) and RED_BLACK_TREE_ITEM_COLOR_RED)<>0 then Write('r');
                  Writeln;
-                 Result:=TreeWalk(PBinaryTreeItem(Cardinal(Left) and (not RED_BLACK_TREE_ITEM_COLOR_RED)),Succ(Depth__))+Succ(Result);
+                 Result:=TreeWalk(PBinaryTreeItem(UIntPtr(Left) and (not RED_BLACK_TREE_ITEM_COLOR_RED)),Succ(Depth__))+Succ(Result);
                  end
             else Result:=0;
           end;
@@ -15016,7 +15051,7 @@ A---B-
           begin // IsABitSetDeadlock; (not in production) returns the external number of the (first) violated player-independent bit-set deadlock, if any, otherwise the return value is 'NONE'
             with Optimizer.V do with Deadlocks do
               for Index:=0 to Pred(Count) do
-                  if   IsASubSet(PBoxConfiguration(Cardinal(First)+Cardinal(Index*BoxConfigurationByteSize))^,BoxConfiguration__) then begin
+                  if   IsASubSet(PBoxConfiguration(UIntPtr(First)+Cardinal(Index*BoxConfigurationByteSize))^,BoxConfiguration__) then begin
                        Result:=DeadlockSetInternalToExternalNo[Index];
                        exit;                                                    // quick-and-dirty exit when the box configuration has been classified as a deadlock
                        end;
@@ -15200,7 +15235,7 @@ A---B-
             if Item__<>nil then with Optimizer.V do
                if   (Index__>=0) and (Index__<Tree__.Count) then begin
                     //BFAdd(Item__^.BoxConfiguration^,BloomFilter);             // add this box configuration to the Bloom filter
-                    Move(Item__^.BoxConfiguration^,PBoxConfiguration(Cardinal(BoxConfigurations__.First)+Cardinal(Index__*BoxConfigurationByteSize))^,BoxConfigurationByteSize); // store the current item's box configuration at its final location
+                    Move(Item__^.BoxConfiguration^,PBoxConfiguration(UIntPtr(BoxConfigurations__.First)+Cardinal(Index__*BoxConfigurationByteSize))^,BoxConfigurationByteSize); // store the current item's box configuration at its final location
                     MakeBoxConfigurationVectorRecursively(Item__^.Left ,Index__*2+1);
                     MakeBoxConfigurationVectorRecursively(Item__^.Right,Index__*2+2);
                     end
@@ -15460,7 +15495,7 @@ A---B-
           // isn't required anymore
           with MemoryPool do begin
             FreeBlock.ByteSize:=FreeBlock.ByteSize+
-                                (Cardinal(FreeBlock.Memory)-Cardinal(MemoryBlock.Memory)); // the difference between 'FreeBlock.Memory' and 'MemoryBlock.Memory' is the size of the area allocated from the bottom of the available memory
+                                (UIntPtr(FreeBlock.Memory)-UIntPtr(MemoryBlock.Memory)); // the difference between 'FreeBlock.Memory' and 'MemoryBlock.Memory' is the size of the area allocated from the bottom of the available memory
             FreeBlock.Memory:=MemoryBlock.Memory;                               // reset the pointer to the bottom of the allocated memory block
             end;
           PreallocatedTreeItemsMemoryBlock.ByteSize:=0;                         // reset the binary tree item pool
@@ -15474,12 +15509,14 @@ A---B-
             // precondition: the caller is responsible for thread safety
         if   (ByteSize__>0) and
              (ByteSize__<High(ByteSize__)-MEMORY_ALIGNMENT_BYTES) then with Optimizer.V do with MemoryPool.FreeBlock do begin
-             ByteAlignment(MEMORY_ALIGNMENT_BYTES,Pointer(ByteSize__));         // ensure that memory always is allocated in multiples of 'MEMORY_ALIGNMENT_BYTES'
+             ByteAlignment(MEMORY_ALIGNMENT_BYTES,ByteSize__);                  // ensure that memory always is allocated in multiples of 'MEMORY_ALIGNMENT_BYTES'
              //EnterCriticalSection(Optimizer.Threads.CriticalSection);
              //try
                if   ByteSize__<=ByteSize then begin
                     if AllocateMemoryFromTheTop__ then begin
-                       Cardinal(Result):=Cardinal(Memory)+Pred(ByteSize)-ByteSize__+1; // 'Pred(ByteSize)...+1': a straightforward calculation like 'Memory+Size-ByteSize' could theoretically overflow after the addition 'Memory+Size'
+                       {$WARNINGS OFF}
+                       Result:=Pointer(UIntPtr(Memory)+Pred(ByteSize)-ByteSize__+1); // 'Pred(ByteSize)...+1': a straightforward calculation like 'Memory+Size-ByteSize' could theoretically overflow after the addition 'Memory+Size'
+                       {$WARNINGS ON}
                        end
                     else begin
                        Result:=Memory;
@@ -15574,7 +15611,7 @@ A---B-
                          SetNo:=Game.DeadlockSets.SquareSetNumbers[SquareNo,Index];
                          if DeadlockSetExternalToInternalNo[SetNo]<>NONE then   // 'True': add a box at the current square for the current deadlock set number
                             AddBox(BoxExternalToInternalSquare[SquareNo],
-                                   PBoxConfiguration(Cardinal(First)+Cardinal(DeadlockSetExternalToInternalNo[SetNo]*BoxConfigurationByteSize))^);
+                                   PBoxConfiguration(UIntPtr(First)+Cardinal(DeadlockSetExternalToInternalNo[SetNo]*BoxConfigurationByteSize))^);
                         end;
                  end
             else Count:=0;
@@ -15684,7 +15721,7 @@ A---B-
       begin // 'InitializeMemoryPool'; precondition: 'TTPurge': had been called to compact the best game path at the bottom of the transposition table
         FillChar(MemoryPool__,SizeOf(MemoryPool__),0);
         if (Positions.Positions<>nil) and
-           (Cardinal(Positions.HashBuckets)>Cardinal(Positions.Positions)) and // '>': hash table buckets are allocated after the nodes stored in the transposition table
+           (UIntPtr(Positions.HashBuckets)>UIntPtr(Positions.Positions)) and // '>': hash table buckets are allocated after the nodes stored in the transposition table
            (Positions.UninitializedItemCount*SizeOf(TOptimizerPosition)>2*MEMORY_ALIGNMENT_BYTES) then
            with MemoryPool__ do with MemoryBlock do begin
              // preserve the best game path at the bottom of the allocated memory
@@ -15697,34 +15734,34 @@ A---B-
              // hash bucket table before all positions on the best path have been
              // compacted at the bottom of the memory;
              Memory:=Pointer(System.Addr(POptimizerPositionVector(Positions.Positions)^[Positions.Count])); // this is the address of the next free node in the transposition table
-             if   (Positions.BestPosition=nil) or (Cardinal(Positions.BestPosition)+Cardinal(SizeOf(TOptimizerPosition))<=Cardinal(Memory)) then begin
+             if   (Positions.BestPosition=nil) or (UIntPtr(Positions.BestPosition)+Cardinal(SizeOf(TOptimizerPosition))<=UIntPtr(Memory)) then begin
                   ByteAlignment(MEMORY_ALIGNMENT_BYTES,Memory);
-                  //ByteSize:=(Cardinal(Positions.Positions)+Cardinal(Pred(Positions.MemoryByteSize))-Cardinal(Memory)) and (not (MEMORY_ALIGNMENT_BYTES-1)); // 'and (not...)': truncate the size to a multiple of 'MEMORY_ALIGNMENT_BYTES'
-                  ByteSize:=(Cardinal(Positions.HashBuckets)-Cardinal(Memory)) and (not (MEMORY_ALIGNMENT_BYTES-1)); // 'and (not...)': truncate the size to a multiple of 'MEMORY_ALIGNMENT_BYTES'
+                  //ByteSize:=(UIntPtr(Positions.Positions)+UIntPtr(Pred(Positions.MemoryByteSize))-UIntPtr(Memory)) and (not (MEMORY_ALIGNMENT_BYTES-1)); // 'and (not...)': truncate the size to a multiple of 'MEMORY_ALIGNMENT_BYTES'
+                  ByteSize:=(UIntPtr(Positions.HashBuckets)-UIntPtr(Memory)) and (not (MEMORY_ALIGNMENT_BYTES-1)); // 'and (not...)': truncate the size to a multiple of 'MEMORY_ALIGNMENT_BYTES'
 
                   if ProtectedUpperMemoryArea__<>nil then // 'ProtectedUpperMemoryArea__' is used for protecting an upper memory area (e.g. vicinity-squares) when the memory-pool is reallocated after a successful call to 'TTPurge'
-                     if   (Cardinal(ProtectedUpperMemoryArea__)>=Cardinal(Memory))
+                     if   (UIntPtr(ProtectedUpperMemoryArea__)>=UIntPtr(Memory))
                           and
-                          (Cardinal(ProtectedUpperMemoryArea__)-Cardinal(Memory)<=ByteSize) then
-                          ByteSize:=(Cardinal(ProtectedUpperMemoryArea__)-Cardinal(Memory)) and (not (MEMORY_ALIGNMENT_BYTES-1)) // 'and (not...)': truncate the size to a multiple of 'MEMORY_ALIGNMENT_BYTES'
+                          (UIntPtr(ProtectedUpperMemoryArea__)-UIntPtr(Memory)<=ByteSize) then
+                          ByteSize:=(UIntPtr(ProtectedUpperMemoryArea__)-UIntPtr(Memory)) and (not (MEMORY_ALIGNMENT_BYTES-1)) // 'and (not...)': truncate the size to a multiple of 'MEMORY_ALIGNMENT_BYTES'
                      else InternalError('InitializeMemoryPool (A)'
                                         +NL+'Positions: '+IntToStr(Positions.Count)
                                         +NL+'Bytes....: '+IntToStr(ByteSize)
-                                        +NL+'Memory...: '+IntToStr(Cardinal(Memory))
-                                        +NL+'Protect..: '+IntToStr(Cardinal(ProtectedUpperMemoryArea__))
-                                        +NL+'Hash.....: '+IntToStr(Cardinal(Positions.HashBuckets))
+                                        +NL+'Memory...: '+IntToStr(UIntPtr(Memory))
+                                        +NL+'Protect..: '+IntToStr(UIntPtr(ProtectedUpperMemoryArea__))
+                                        +NL+'Hash.....: '+IntToStr(UIntPtr(Positions.HashBuckets))
                                        );
 
                   FreeBlock:=MemoryBlock;              // the entire memory block is free at the moment
                   Positions.UninitializedItemCount:=0; // '0'  : ensure that no more positions are added to the transposition table by the normal transposition table functions
                   Positions.FreeList:=nil;             // 'nil': ensure that no more positions are added to the transposition table by the normal transposition table functions
-                  //Write(Positions.Count,SPACE,Positions.MemoryByteSize,SPACE,Cardinal(Positions.Positions),SPACE,Cardinal(Positions.HashBuckets),SPACE,Cardinal(MemoryBlock.Addr),SPACE,MemoryBlock.Size);
+                  //Write(Positions.Count,SPACE,Positions.MemoryByteSize,SPACE,UIntPtr(Positions.Positions),SPACE,UIntPtr(Positions.HashBuckets),SPACE,UIntPtr(MemoryBlock.Addr),SPACE,MemoryBlock.Size);
                   //Readln;
                   end
              else InternalError('InitializeMemoryPool (B)'
                                 +NL+'Positions: '+IntToStr(Positions.Count)
-                                +NL+'Memory...: '+IntToStr(Cardinal(Memory))
-                                +NL+'Best.....: '+IntToStr(Cardinal(Positions.BestPosition))
+                                +NL+'Memory...: '+IntToStr(UIntPtr(Memory))
+                                +NL+'Best.....: '+IntToStr(UIntPtr(Positions.BestPosition))
                                );
              end;
         Result:=MemoryPool__.FreeBlock.ByteSize>0;
@@ -15845,9 +15882,9 @@ A---B-
                if Block__=nil then begin                                        // 'nil': no block matching the requested size was found on the free-list
                   Block__:=GetMemory(MinBlockByteSize__,False);                 // try to allocate a new memory block from the pool
                   if Block__<>nil then begin
-                     Cardinal(Block__):=Cardinal(Block__)+(MinBlockByteSize__-Cardinal(SizeOf(Block__^))); // the block is represented by its links which are located after the data area
+                     UIntPtr(Block__):=UIntPtr(Block__)+(MinBlockByteSize__-Cardinal(SizeOf(Block__^))); // the block is represented by its links which are located after the data area
                      Block__^.ByteSize:=MinBlockByteSize__;                     // save the block byte size
-                     Cardinal(Block__^.Memory):=Cardinal(Block__)-Cardinal(MinBlockByteSize__-Cardinal(SizeOf(Block__^))); // save the memory address where the data area begins
+                     UIntPtr(Block__^.Memory):=UIntPtr(Block__)-Cardinal(MinBlockByteSize__-Cardinal(SizeOf(Block__^))); // save the memory address where the data area begins
                      end;
                   end;
 
@@ -15867,8 +15904,8 @@ A---B-
         begin // returns the memory block to which the item belongs; precondition: the caller is responsible for thread safety
           if MemoryBlocks__.Root<>nil then begin
              Result:=MemoryBlocks__.Root^.Previous;                             // start the search by examining the most recently added memory block; often the item either belongs to this one, or to the root block
-             while (Cardinal(Item__)<Cardinal(Result^.Memory)) or
-                   (Cardinal(Item__)>Cardinal(Result)) do begin                 // '>Cardinal(Result)': a memory block is its own end-of-block pointer, and an item pointer is allowed to point right after the last item in the block
+             while (UIntPtr(Item__)<UIntPtr(Result^.Memory)) or
+                   (UIntPtr(Item__)>UIntPtr(Result)) do begin                   // '>UIntPtr(Result)': a memory block is its own end-of-block pointer, and an item pointer is allowed to point right after the last item in the block
                    Result:=Result^.Next;                                        // try the next memory block
                    if Result=MemoryBlocks__.Root^.Previous then begin           // 'True': circular list wrap around, i.e., the item does not belong to any of the memory blocks on the list
                       Result:=nil; exit;
@@ -15888,11 +15925,11 @@ A---B-
                Result:=Block__.Memory;
                while (Result<>Block__)
                      and
-                     (((Cardinal(Result) and TagBitMask)<>0)                    // '<>': it's not possible to store tag bits in the low bits of a pointer to an item
+                     (((UIntPtr(Result) and TagBitMask)<>0)                    // '<>': it's not possible to store tag bits in the low bits of a pointer to an item
                       or
-                     ((Cardinal(Block__)-Cardinal(Result)) mod ItemByteSize__<>0) // 'Cardinal(Block__)': the block is represented by its links, and they a placed after the data area; that way, the block is its own end-of-data-area pointer
+                     ((UIntPtr(Block__)-UIntPtr(Result)) mod ItemByteSize__<>0) // 'Cardinal(Block__)': the block is represented by its links, and they a placed after the data area; that way, the block is its own end-of-data-area pointer
                      ) do
-                     Inc(Cardinal(Result));
+                     Inc(UIntPtr(Result));
                end
           else begin Msg(TEXT_INTERNAL_ERROR+': FirstItemInBlock: Item misalignment. Size: '+IntToStr(ItemByteSize__),TEXT_APPLICATION_TITLE);
                      Result:=Block__;                                           // empty block
@@ -15968,7 +16005,7 @@ A---B-
         begin  // returns the number of pushes on the path to the game-state represented by 'Item__'; the root node (the slice starting position) is not counted
           Result:=-1;                                                           // '-1': // the first node on the path is the slice start position (the root node), and it's not counted; the new path begins with the next node
           while Item__<>nil do begin
-            Inc(Result); Item__:=PQueueItem(Cardinal(Item__^.PushAncestor) and (not DIRECTION_BIT_MASK)); // '(not DIRECTION_BIT_MASK)': the push ancestor pointer may contain a direction stored in the low bits
+            Inc(Result); Item__:=PQueueItem(UIntPtr(Item__^.PushAncestor) and (not DIRECTION_BIT_MASK)); // '(not DIRECTION_BIT_MASK)': the push ancestor pointer may contain a direction stored in the low bits
             end;
         end; // CalculateQueueItemPushPathLength
 
@@ -16047,8 +16084,10 @@ A---B-
         begin // returns the last item on the queue, if any
           with Queue__ do
             if   Top<>nil then begin
-                 Cardinal(Result):=Cardinal(Top)-ItemByteSize;                  // 'Top' points right after the most recently added item on the queue, hence, the last item is located 'ItemByteSize' bytes before the top
-                 if Cardinal(Result)<Cardinal(Block.Memory) then Result:=nil;   // 'True': the queue is empty
+                 {$WARNINGS OFF}
+                 Result:=Pointer(UIntPtr(Top)-ItemByteSize);                    // 'Top' points right after the most recently added item on the queue, hence, the last item is located 'ItemByteSize' bytes before the top
+                 {$WARNINGS ON}
+                 if UIntPtr(Result)<UIntPtr(Block.Memory) then Result:=nil;     // 'True': the queue is empty
                  end
             else Result:=nil;
         end; // LastItemOnQueue
@@ -16098,7 +16137,7 @@ A---B-
         function  NextItemOnQueue(Item__:Pointer; MemoryBlock__:PMemoryBlock; const Queue__:TQueue):Pointer;
         begin // returns the next item on the queue, if any, without dequeueing the current item; precondition: 'Item__' belongs to the given memory block
           if   (Item__<>Queue__.Top) and (Item__<>nil) then begin               // 'True': this isn't the last item on the queue
-               Result:=Pointer(Cardinal(Item__)+Queue__.ItemByteSize);
+               Result:=Pointer(UIntPtr(Item__)+Queue__.ItemByteSize);
                if Result=MemoryBlock__ then                                     // 'True': 'Item__' is the last item in its memory block
                   Result:=FirstItemInBlock(MemoryBlock__^.Next,Queue__.ItemByteSize); // the next item is the first one in the next memory block
                end
@@ -16258,7 +16297,7 @@ A---B-
                  GameState:=GameState div GAME_STATE_MULTIPLICATION_FACTOR_FOR_BOXLINES_SEARCH;
                SavePlayerAndBoxConfigurationToGame(GameState mod PlayerSquareCount,GetBoxConfigurationByIndex(GameState div PlayerSquareCount)^);
                WriteBoardToLogFile(IntToStr(PathLength));
-               Item__:=PQueueItem(Cardinal(Item__^.PushAncestor) and (not DIRECTION_BIT_MASK));
+               Item__:=PQueueItem(UIntPtr(Item__^.PushAncestor) and (not DIRECTION_BIT_MASK));
                Dec(PathLength);
                end;
              Result:=CloseLogFile;
@@ -16270,7 +16309,7 @@ A---B-
         function  GetBoxConfigurationByIndex(Index__:Integer):PBoxConfiguration;
         begin
           with Optimizer.V do
-            Result:=PBoxConfiguration(Cardinal(BoxConfigurations.First)+Cardinal(Index__*BoxConfigurationByteSize));
+            Result:=PBoxConfiguration(UIntPtr(BoxConfigurations.First)+Cardinal(Index__*BoxConfigurationByteSize));
         end; // GetBoxConfigurationByIndex
 
         function  Initialize:Boolean;                                           // initializes searching for a best path through the current slice of the game; don't confuse the search initialization with the vicinity-search method initialization
@@ -16503,13 +16542,13 @@ A---B-
                          HashValue:=HashValue xor YASO.Positions.SquareHashValues[BoxInternalToExternalSquare[BoxSquareNo]];
                   Position.Successor   :=PPosition(FirstPosition__);            // link to the next position on the new path
                   FirstPosition__      :=Addr(Position);                        // this is now the head of the successor-linked list of positions on the new path
-                  QueueItem__          :=PQueueItem(Cardinal(QueueItem__^.PushAncestor) and (not DIRECTION_BIT_MASK)); // backtrack to the previous push on the found path
+                  QueueItem__          :=PQueueItem(UIntPtr(QueueItem__^.PushAncestor) and (not DIRECTION_BIT_MASK)); // backtrack to the previous push on the found path
                   end;
                 end;
 
               Result:=Result and (Count=0) and (FirstPosition__<>RestPath__) and // 'True': there is a new non-empty path
                       (QueueItem__<>nil) and
-                      (PQueueItem(Cardinal(QueueItem__.PushAncestor) and (not DIRECTION_BIT_MASK))=nil); // 'True': all items on the path were processed
+                      (PQueueItem(UIntPtr(QueueItem__.PushAncestor) and (not DIRECTION_BIT_MASK))=nil); // 'True': all items on the path were processed
               if (not Result) and
                  (not ((Optimizer.Optimization>=opBoxLinesMoves) and (Count>MaxSearchDepth))) then // optimizing boxlines may produce paths with more pushes than the reserved memory can accomodate; in that case silently discard the path
                  InternalError('Search.IsNewBetterPath.MakePath');
@@ -16666,7 +16705,7 @@ A---B-
 //          if BFLookup(BoxConfiguration__,BloomFilter,HashKey) then begin      // 'True': there is a chance that the position exists in the collection (a Bloom filter can return false positives but never false negatives)
                Result:=0;
                while Result<BoxConfigurations.Count do begin
-                 i:=CompareBoxConfigurations(BoxConfiguration__,PBoxConfiguration(Cardinal(BoxConfigurations.First)+Cardinal(Result*BoxConfigurationByteSize))^);
+                 i:=CompareBoxConfigurations(BoxConfiguration__,PBoxConfiguration(UIntPtr(BoxConfigurations.First)+Cardinal(Result*BoxConfigurationByteSize))^);
                  if      i<0 then Result:=(Result*2)+1
                  else if i>0 then Result:=(Result*2)+2
                       else exit;                                                // 'exit': quick-and-dirty exit the function when a matching box configuration has been found
@@ -16765,7 +16804,7 @@ A---B-
                           BoxConfigurationIndex:=GameState div PlayerSquareCount;
 //                        PlayerSquare         :=GameState mod PlayerSquareCount;
                           PlayerSquare         :=GameState-PlayerSquareCount*Cardinal(BoxConfigurationIndex); // 'mod' may be slow, hence, the player square is calculated this way instead
-                          BoxConfiguration     :=PBoxConfiguration(Cardinal(BoxConfigurations.First)+Cardinal(BoxConfigurationIndex*BoxConfigurationByteSize)); // inlined 'GetBoxConfigurationByIndex()'
+                          BoxConfiguration     :=PBoxConfiguration(UIntPtr(BoxConfigurations.First)+Cardinal(BoxConfigurationIndex*BoxConfigurationByteSize)); // inlined 'GetBoxConfigurationByIndex()'
                           NewBoxConfiguration  :=nil;                           // 'nil': the current box configuration hasn't been copied to 'BoxConfigurationCopy'
 
                           if   IsPushesQueue__ then                             // 'True': this is the pushes-queue or the boxline-queue
@@ -16803,7 +16842,7 @@ A---B-
                                              //            CalculateTotalMoveCount div ONE_MILLION,
                                              //            SLASH,
                                              //            CalculateTotalPushCount div ONE_MILLION,' million'
-                                             //            //,SPACE,Cardinal(Queues.MemoryBlock.Memory)+Queues.MemoryBlock.ByteSize-Cardinal(Queues.MovesQueue.Top)
+                                             //            //,SPACE,UIntPtr(Queues.MemoryBlock.Memory)+Queues.MemoryBlock.ByteSize-UIntPtr(Queues.MovesQueue.Top)
                                              //            {$IFDEF WINDOWS}
                                              //              ,' Time: ',CalculateElapsedTimeS(Solver.StartTimeMS,GetTimeMS)
                                              //            {$ENDIF}
@@ -17239,7 +17278,7 @@ A---B-
             with Optimizer.V do with SearchData do with Threads[ThreadIndex__] do with Queues do
               if EnlargeQueue    (QUEUE_MEMORY_BLOCK_BYTE_SIZE,PushesQueue) and // allocate the first memory block for the pushes-queue
                  MakeSpan        (PushesQueue,PushSpansQueue) and               // make a start span for the pushes-queue
-                 EnqueueGameState(Cardinal(StartBoxConfigurationIndex)*PlayerSquareCount+Cardinal(StartPlayerSquare),PQueueItem(Cardinal(nil) or DIRECTION_BIT_MASK),PushesQueue) // enqueue the start position on the pushes-queue
+                 EnqueueGameState(Cardinal(StartBoxConfigurationIndex)*PlayerSquareCount+Cardinal(StartPlayerSquare),PQueueItem(UIntPtr(nil) or DIRECTION_BIT_MASK),PushesQueue) // enqueue the start position on the pushes-queue
                  then begin
                  //Position:=SliceStartPosition;
 
@@ -17517,14 +17556,14 @@ A---B-
                        BoxConfigurationIndex:=GameState div PlayerSquareCount;
 //                     PlayerSquare         :=GameState mod PlayerSquareCount;
                        PlayerSquare         :=GameState-PlayerSquareCount*Cardinal(BoxConfigurationIndex); // 'mod' may be slow, hence, the player square is calculated this way instead
-                       BoxConfiguration     :=PBoxConfiguration(Cardinal(BoxConfigurations.First)+Cardinal(BoxConfigurationIndex*BoxConfigurationByteSize)); // inlined 'GetBoxConfigurationByIndex()'
+                       BoxConfiguration     :=PBoxConfiguration(UIntPtr(BoxConfigurations.First)+Cardinal(BoxConfigurationIndex*BoxConfigurationByteSize)); // inlined 'GetBoxConfigurationByIndex()'
                        NewBoxConfiguration  :=nil;                              // 'nil': the current box configuration hasn't been copied to 'BoxConfigurationCopy'
 
                        MovesQueue[Low(MovesQueue)]:=PlayerSquare;
                        MovesQueueBottom:=Addr(MovesQueue[Low(MovesQueue)]);
                        MovesQueueTop   :=MovesQueueBottom;
 
-                       while Cardinal(MovesQueueBottom)<=Cardinal(MovesQueueTop) do begin // perform a breadth-first search from the current game-state, putting pushes on the pushes-queue that lead to unvisited game-states
+                       while UIntPtr(MovesQueueBottom)<=UIntPtr(MovesQueueTop) do begin // perform a breadth-first search from the current game-state, putting pushes on the pushes-queue that lead to unvisited game-states
                          PlayerSquare:=MovesQueueBottom^; Inc(MovesQueueBottom);
 
                          for Direction:=Low(Direction) to High(Direction) do
@@ -17549,7 +17588,7 @@ A---B-
                                             //            CalculateTotalMoveCount div ONE_MILLION,
                                             //            SLASH,
                                             //            CalculateTotalPushCount div ONE_MILLION,' million'
-                                            //            //,SPACE,Cardinal(Queues.PushesQueue.Top)-Cardinal(Queues.MemoryBlock.Memory)
+                                            //            //,SPACE,UIntPtr(Queues.PushesQueue.Top)-UIntPtr(Queues.MemoryBlock.Memory)
                                             //            {$IFDEF WINDOWS}
                                             //              ,' Time: ',CalculateElapsedTimeS(Solver.StartTimeMS,GetTimeMS)
                                             //            {$ENDIF}
@@ -18473,7 +18512,7 @@ begin
   {$ENDIF}
 end;
 
-function  Initialize(MemoryByteSize__:Cardinal;
+function  Initialize(MemoryByteSize__:UInt;
                      PushCountLimit__:Int64;
                      DepthLimit__,
                      BackwardSearchDepthLimit__:Cardinal;
@@ -18672,9 +18711,11 @@ end;
 //            (BOX_GOAL_BIT_MASK                                 <  ((1 shl GOAL_BIT_SHIFT_COUNT) shr BOX_BIT_SHIFT_COUNT)) and {goal numbers and boxnumbers are stored in the upper bits for each square}
               (MAX_DEADLOCK_SETS                                 <= High(Game.DeadlockSets.SquareSetNumbers[0,0])) and {for compactness, the set numbers for each square are saved as small 16 bit integers}
               (SizeOf(Integer)                                   =  SizeOf(Cardinal)) and {the size of signed and unsigned integers must be identical}
+    {$IFDEF X86_32}
               (SizeOf(UInt)                                      =  SizeOf(Cardinal)) and {'UInt' is short for 'unsigned integer' which Delphi calls 'Cardinal'}
-              (SizeOf(UInt)                                      =  SizeOf(Pointer)) and
               (SizeOf(Integer)                                   =  SizeOf(Pointer)) and
+    {$ENDIF}
+              (SizeOf(UInt)                                      =  SizeOf(Pointer)) and
               (BITS_PER_BYTE*SizeOf(Integer)                     = 1 shl LOG2_BITS_PER_INTEGER) and
               (SizeOf(TSmallBoxSet)                              =  SizeOf(Integer)) and
               (High(Game.DeadlockSets.SquaresOutsideFenceIndex[ Low(Game.DeadlockSets.SquaresOutsideFenceIndex) ]) {'outside-fence' squares are only saved for some deadlock sets, and for compactness the squares are saved as small 16-bit numbers}
@@ -18771,6 +18812,9 @@ end;
                                    SizeOf(Solver)
                                    +(ONE_MEBI div 2)
                                  ) div ONE_MEBI:6,' MiB');
+       Writeln(  'Dynamic memory: ',(Positions.MemoryByteSize));
+       Writeln(  'Dynamic memory: ',(Positions.MemoryByteSize +(ONE_MEBI div 2)));
+       Writeln(  'Dynamic memory: ',(Positions.MemoryByteSize +(ONE_MEBI div 2)) div ONE_MEBI);
        Write(  'Dynamic memory: ',(Positions.MemoryByteSize +(ONE_MEBI div 2)) div ONE_MEBI:6,' MiB');
        if      Solver.Enabled then
                Write('   Position capacity: ',Positions.Capacity,
