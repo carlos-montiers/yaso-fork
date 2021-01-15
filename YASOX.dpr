@@ -10496,6 +10496,17 @@ begin // terminates the current search; to terminate the application, call 'Term
   Positions.OpenPositions.MaxValue:=Low(Positions.OpenPositions.Buckets)-2;     {'-2': signals that some open positions haven't been fully expanded}
 end; {TerminateSearch}
 
+{$IFDEF WINDOWS}
+{$IFDEF CONSOLE_APPLICATION}
+function CtrlC(dwCtrlType:LongWord):LongBool;StdCall;
+begin
+  TerminateSearch;
+  SetSokobanStatusText(TEXT_TERMINATED_BY_USER);
+  CtrlC:=True;
+end; {CtrlC}
+{$ENDIF}
+{$ENDIF}
+
 procedure TimeCheck;
 begin
   InterlockedIncrement(Solver.TimeCheckCount);
@@ -18832,6 +18843,9 @@ end;
 
   procedure RunApplication;
   begin
+    {$IFDEF WINDOWS}
+      SetConsoleCtrlHandler(@CtrlC, True);
+    {$ENDIF}
     with Reader do Run(InputFileName,FirstLevelNo,LastLevelNo);
   end;
 
