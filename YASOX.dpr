@@ -1687,7 +1687,7 @@ begin
 end;
 
 {$IFDEF PLUGIN_MODULE}
-procedure GetAsMuchMemoryAsPossible(var Memory__:Pointer; var ByteSize__:Cardinal; MinimumByteSize__:Cardinal);
+procedure GetAsMuchMemoryAsPossible(var Memory__:Pointer; var ByteSize__:UInt; MinimumByteSize__:Cardinal);
 const {$IFDEF WINDOWS}
         RESERVE_MEMORY_BYTE_SIZE=  32*ONE_MEBI; {for safety, leave some memory unused; for instance, opening the 'Settings' window while the plugin is running will need some working memory}
       {$ENDIF}
