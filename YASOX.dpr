@@ -1445,7 +1445,6 @@ var
                        OptimizationMethodEnabled__:TOptimizationMethodEnabled;
                        OptimizationMethodOrder__:TOptimizationMethodOrder;
                        Optimization__:TOptimization;
-                       ThreadCount__:Integer;
                        VicinitySettings__:TVicinitySettings;
                        SokobanCallBackFunction__:TSokobanCallBackFunction;
                        SokobanStatusPointer__:PSokobanStatus;
@@ -18549,7 +18548,6 @@ function  Initialize(MemoryByteSize__:UInt;
                      OptimizationMethodEnabled__:TOptimizationMethodEnabled;
                      OptimizationMethodOrder__:TOptimizationMethodOrder;
                      Optimization__:TOptimization;
-                     ThreadCount__:Integer;
                      VicinitySettings__:TVicinitySettings;
                      SokobanCallBackFunction__:TSokobanCallBackFunction;
                      SokobanStatusPointer__:PSokobanStatus;
@@ -18807,7 +18805,6 @@ end;
                                         Optimizer.MethodEnabled,
                                         Optimizer.MethodOrder,
                                         Optimizer.Optimization,
-                                        Optimizer.Threads.Count,
                                         Optimizer.VicinitySettings,
                                         nil, //SokobanCallbackFunction,
                                         nil,
