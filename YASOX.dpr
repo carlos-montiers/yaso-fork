@@ -1,7 +1,7 @@
 {
 YASOX - Sokoban Solution Optimizer
-Fork Version: 2.142
-Forked Version: 2.142 - January 11, 2020
+Fork Version: 2.144
+Forked Version: 2.144 - July 5, 2020
 Copyright (c) 2002-2020 by Brian Damgaard (Denmark)
 Copyright (c) 2021 by Jason Hood (Australia)
 Copyright (c) 2021 by Carlos Montiers Aguilera (Chile)
@@ -546,7 +546,7 @@ const
   TEXT_APPLICATION_TITLE_LONG
                            = TEXT_APPLICATION_TITLE+' - Sokoban Solution Optimizer';
   TEXT_APPLICATION_VERSION_NUMBER
-                           = '2.142';
+                           = '2.144';
   TEXT_BACKWARD_SEARCH     = 'Backward search';
   TEXT_BEST_RESULT_SO_FAR  = 'Best result so far: ';
   TEXT_CALCULATING_PACKING_ORDER
@@ -604,9 +604,9 @@ const
   TEXT_SEARCH_STATUS_BOX_PERMUTATIONS
                            = '-box permutations: Pushes ';
   TEXT_SEARCH_STATUS_GLOBAL_OPTIMIZATION
-                           = '(Global optimization: Transposition table: ';
+                           = 'Global optimization: Transposition table: ';
   TEXT_SEARCH_STATUS_REARRANGEMENT_OPTIMIZATION
-                           = '(Rearrangement optimization: Pushes ';
+                           = 'Rearrangement optimization: Pushes ';
   TEXT_SEARCH_STATUS_VICINITY_1
                            = '(Vicinity search: Positions: ';
   TEXT_SEARCH_STATUS_VICINITY_2
@@ -14324,8 +14324,8 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                     end;
                {else Write(PERIOD)};
              {$ELSE}
-               Optimizer.SearchStateStatusText:=TEXT_SEARCH_STATUS_GLOBAL_OPTIMIZATION+IntToStr((YASO.Positions.Count*100) div Optimizer.PositionCapacity)+'%)';
-               SetSokobanStatusText(Optimizer.SearchResultStatusText+Optimizer.SearchStateStatusText);
+               Optimizer.SearchStateStatusText:=TEXT_SEARCH_STATUS_GLOBAL_OPTIMIZATION+IntToStr((YASO.Positions.Count*100) div Optimizer.PositionCapacity)+'%';
+               SetSokobanStatusText(Optimizer.SearchResultStatusText+NL+Optimizer.SearchStateStatusText);
              {$ENDIF}
              TimeCheck;
              if Solver.SearchLimits.DepthLimit<0 then                           {'True': the time limit has been exceeded}
