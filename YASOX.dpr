@@ -18823,9 +18823,6 @@ end;
                                    SizeOf(Solver)
                                    +(ONE_MEBI div 2)
                                  ) div ONE_MEBI:6,' MiB');
-       Writeln(  'Dynamic memory: ',(Positions.MemoryByteSize));
-       Writeln(  'Dynamic memory: ',(Positions.MemoryByteSize +(ONE_MEBI div 2)));
-       Writeln(  'Dynamic memory: ',(Positions.MemoryByteSize +(ONE_MEBI div 2)) div ONE_MEBI);
        Write(  'Dynamic memory: ',(Positions.MemoryByteSize +(ONE_MEBI div 2)) div ONE_MEBI:6,' MiB');
        if      Solver.Enabled then
                Write('   Position capacity: ',Positions.Capacity,
