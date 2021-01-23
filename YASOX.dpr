@@ -1551,7 +1551,7 @@ procedure GetSystemInformation(
 
       MemoryAllocationGranularity := SystemInformation.dwAllocationGranularity;
       MemoryPageByteSize          := SystemInformation.dwPageSize;
-      PhysicalMemoryByteSize      := MemoryStatusEx   .ullTotalPhys;
+      PhysicalMemoryByteSize      := UInt(MemoryStatusEx.ullTotalPhys);
       end;
   end;
 {$ELSE}
@@ -2359,7 +2359,7 @@ begin {a simple and not fool-proof implementation}
                                              Result:=GetParameter(c,
                                                                   0,
                                                                  {$IFDEF WINDOWS}
-                                                                   MemoryByteSize__,
+                                                                   Cardinal(MemoryByteSize__),
                                                                  {$ELSE}
                                                                    MAX_TRANSPOSITION_TABLE_BYTE_SIZE,
                                                                  {$ENDIF}
@@ -2672,11 +2672,13 @@ begin
 end;
 
 function  MakeLevelStatistics(const Name__:String;
-                              Width__,Height__,MoveCount__,PushCount__,LowerBound__,
+                              Width__,Height__:Cardinal;
+                              MoveCount__,PushCount__:Int64;
+                              LowerBound__:Cardinal;
                               PositionCount__,CorralPositionCount__,CorralPositionBoxCount__,ForwardPositionCount__,GeneratedMovesCount__,GeneratedPushesCount__,
                               DeadlockedOpenPositionsCount__,DeadlockPositionsCount__,
                               PrecalculatedDeadlockSetsCount__,DynamicDeadlockSetsCount__,
-                              DeadlockSetsPushCount__,NewPathCount__,RoomPositionCount__:Cardinal;
+                              DeadlockSetsPushCount__,NewPathCount__,RoomPositionCount__:Int64;
                               InitializationTimeMS__,DeadlockSetsTimeMS__,PackingOrderTimeMS__,SolverTimeMS__,OptimizerTimeMS__:TTimeMS;
                               Flags__:TLevelStatisticsFlags):PLevelStatistics;
 begin
@@ -12516,7 +12518,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                 repeat r:=r^.Successor;                                         // find the promote-box pushes in [current-push + 1 .. last-promote-box-push] that should be moved after the current position
                        if r^.Move.BoxNo=PromoteBoxNo then begin                 // 'True': this is one of the promote-box positions that should be moved, unless it already is at the right place
                           if r<>q^.Successor then begin                         // '<>': the position isn't already at the right place in the sequence, hence, move it now
-                             MovePositions(r,r,q); Inc(Result);
+                             MovePositions(r,r,q);
                              end;
                           q:=q^.Successor;
                           end;
@@ -17740,12 +17742,12 @@ A---B-
 
           procedure  ResetVisited(GameState__:TGameState);
           begin // sets the visited state to 'False' for the game state [box configuration, player square] represented by 'GameState__'
-            Dec(Optimizer.V.VisitedArea^[GameState__ div BITS_PER_INTEGER],1 shl (GameState__ mod BITS_PER_INTEGER)); // precondition: 'Visited' = 'False' for this game-state
+            Dec(Optimizer.V.VisitedArea^[GameState__ div BITS_PER_INTEGER],Cardinal(1) shl (GameState__ mod BITS_PER_INTEGER)); // precondition: 'Visited' = 'False' for this game-state
           end; // Optimize.Search.VicinitySearch.Search.ResetVisited
 
           procedure  SetVisited(GameState__:TGameState);
           begin // sets the visited state to 'True' for the game state [box configuration, player square] represented by 'GameState__'
-            Inc(Optimizer.V.VisitedArea^[GameState__ div BITS_PER_INTEGER],1 shl (GameState__ mod BITS_PER_INTEGER)); // precondition: 'Visited' = 'False' for this game state
+            Inc(Optimizer.V.VisitedArea^[GameState__ div BITS_PER_INTEGER],Cardinal(1) shl (GameState__ mod BITS_PER_INTEGER)); // precondition: 'Visited' = 'False' for this game state
           end; // Optimize.Search.VicinitySearch.Search.SetVisited
 
         procedure ShowGameState(InternalPlayerSquare__:Integer; const BoxConfiguration__:TBoxConfiguration; const Caption__:String; Log__:Boolean); // debugging service function
