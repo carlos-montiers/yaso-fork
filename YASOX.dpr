@@ -951,6 +951,9 @@ type
         );
       ptClosed:                             {closed nodes (interior nodes), i.e., nodes stored in the transposition table but not on the open-list and not on the perimeter-list}
         (BestForgottenScore: TScore;        {best score for pruned successors, if any}
+         {$IFNDEF X86_32}
+           Padding1        : Uint32;
+         {$ENDIF}
          NextPartiallyExpandedPosition
                            : PPosition;     {the list root for partially expanded positions is 'Positions.PartiallyExpandedPositionsList'}
         );
@@ -959,6 +962,9 @@ type
         );
       ptOptimizer:                          {see 'TOptimizerPosition' for more optimizer fields}
         (SmallBoxSet       : TSmallBoxSet;  {only available for nodes not on the open-queue which uses the overlapping 'ScoreBucket'}
+         {$IFNDEF X86_32}
+           Padding2        : Uint32;
+         {$ENDIF}
          Successor         : PPosition;     {only available for nodes not on the open-queue which uses the overlapping 'ScoreBucket'}
         );
                              end;
@@ -1143,6 +1149,9 @@ type
     BoxChanges             : TScore;
     PushingSessions        : TScore;
     PlayerLines            : TScore;
+    {$IFNDEF X86_32}
+      Padding              : Uint32; {align to 8 bytes}
+    {$ENDIF}
                              end;
 //POptimizerPosition       = ^TOptimizerPosition;
   TOptimizerPositionVector = array[0..(MaxInt div SizeOf(TOptimizerPosition))-1] of TOptimizerPosition;
@@ -15734,7 +15743,7 @@ A---B-
         FillChar(MemoryPool__,SizeOf(MemoryPool__),0);
         if (Positions.Positions<>nil) and
            (UIntPtr(Positions.HashBuckets)>UIntPtr(Positions.Positions)) and // '>': hash table buckets are allocated after the nodes stored in the transposition table
-           (Positions.UninitializedItemCount*SizeOf(TOptimizerPosition)>2*MEMORY_ALIGNMENT_BYTES) then
+           (UInt(Positions.UninitializedItemCount)*SizeOf(TOptimizerPosition)>2*MEMORY_ALIGNMENT_BYTES) then
            with MemoryPool__ do with MemoryBlock do begin
              // preserve the best game path at the bottom of the allocated memory
              // and the hash table buckets at the top of the allocated memory;
