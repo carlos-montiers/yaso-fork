@@ -439,7 +439,7 @@ const
                               {$IFDEF X86_32}
                                 MaxInt - 16*ONE_MEBI;
                               {$ELSE}
-                                32*ONE_GIBI;   {32GiB arbitrary limit}
+                                1024*ONE_GIBI;   {be interesting to see when this isn't enough...}
                               {$ENDIF}
                            {$ENDIF}
   MAX_VICINITY_SQUARES     = {MAX_BOARD_WIDTH*MAX_BOARD_HEIGHT} 999; {the only reason for the 999-limit is that it allows a settings window to operate with 3-digits only for the spin-edit controls}
