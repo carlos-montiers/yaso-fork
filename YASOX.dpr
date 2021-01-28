@@ -1681,6 +1681,13 @@ begin
   Result:=(CalculateElapsedTimeMS(StartTimeMS__,StopTimeMS__)+500) div 1000
 end;
 
+function  ConvertElapsedTimeSMS(StartTimeMS__,StopTimeMS__:TTimeMS):String;
+var AResult:ShortString;
+begin
+  Str(CalculateElapsedTimeMS(StartTimeMS__,StopTimeMS__)/1000.0:1:3,AResult);
+  Result:=String(AResult);
+end;
+
 procedure DoNothing;
 begin
 end;
@@ -12950,7 +12957,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
 
         SetPosition(nil); // go back to the start of the game
 
-        //Writeln('Time: ',CalculateElapsedTimeS(StartTimeMS,GetTimeMS)); Readln;
+        //Writeln('Time: ',ConvertElapsedTimeSMS(StartTimeMS,GetTimeMS)); Readln;
       end; // Optimize.Search.RearrangementOptimization.SymmetryOptimization
 
     begin // RearrangementOptimization
@@ -12985,7 +12992,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
          end;
       //Optimizer.TimeMS:=CalculateElapsedTimeMS(StartTimeMS,GetTimeMS);
 
-      // Write('Rearrangement: ',Result,' Time: ',CalculateElapsedTimeS(StartTimeMS,GetTimeMS)); Readln;
+      // Write('Rearrangement: ',Result,' Time: ',ConvertElapsedTimeSMS(StartTimeMS,GetTimeMS)); Readln;
     end; // Optimize.Search.RearrangementOptimization
 
 //  function  SearchBackwards(PullBoxNo__:Integer; PullDirection__:TDirection; Depth__,BoxCountDown__:Integer; SuccessorPosition__:PPosition):Boolean; forward;
@@ -15492,7 +15499,7 @@ A---B-
              end;
 
           {$IFDEF CONSOLE_APPLICATION}
-            Writeln(Reader.LevelCount,'. Box configurations: ',Tree.Count,' Positions: ',Positions.Count,' Time: ',CalculateElapsedTimeS(StartTimeMS,GetTimeMS){,' Freeze-test deadlocks: ',Positions.SearchStatistics.FreezeTestDeadlockCount});
+            Writeln(Reader.LevelCount,'. Box configurations: ',Tree.Count,' Positions: ',Positions.Count,' Time: ',ConvertElapsedTimeSMS(StartTimeMS,GetTimeMS){,' Freeze-test deadlocks: ',Positions.SearchStatistics.FreezeTestDeadlockCount});
             //BTRedBlackTreeCheck(Tree);
             //Readln;
           {$ENDIF}
