@@ -16401,8 +16401,7 @@ A---B-
              if i<BoxConfigurations.Count then Inc(i)
               else i:=0;
               end;
-            t:=CalculateElapsedTimeS(t,GetTimeMS);
-            Msg(IntToStr(t),'Time');
+            Msg(ConvertElapsedTimeSMS(t,GetTimeMS),'Time');
 }
             {$WARNINGS OFF}                                                     // precondition checks
               {warning: Comparison always evaluates to True}
