@@ -48,28 +48,30 @@ You should have received a copy of the GNU General Public License along with thi
   {$DEFINE PLUGIN_MODULE}
 {$ENDIF}
 
-{///$DEFINE DELPHI}                            {compiler: use only one of these: DELPHI of FPC}
-{///$DEFINE FPC}                               {compiler: use only one of these: DELPHI of FPC}
-{$IFNDEF FPC}                                  {compiler: assume Delphi if not FPC}
-  {$DEFINE DELPHI}
-{$ENDIF}
-
 {$DEFINE WINDOWS}                              {use this on the Windows platform only}
 
+{$IFDEF CPU386}
+  {$DEFINE X86_32}                             {the program is implemented as a 32-bit version}
+{$ENDIF}
+
+{$M 1048576,16777216}                          {stack size: minimum 1 MiB, maximum 16MiB}
+{$APPTYPE CONSOLE}                             {specify type of application}
+
+{///$DEFINE DELPHI}                            {compiler: use only one of these: DELPHI of FPC}
+{///$DEFINE FPC}                               {compiler: use only one of these: DELPHI of FPC}
 {$IFDEF DELPHI}
-  {$APPTYPE CONSOLE}                           {use this with DELPHI only}
   {$UNDEF FPC}                                 {for safety}
-  {$M 1048576,2097152}                         {stack size, minimum 1 MiB}
+{$ENDIF}
+{$IFDEF FPC}
+  {$UNDEF DELPHI}                              {for safety}
+{$ENDIF}
+
+{$IFNDEF FPC}
+  {$DEFINE DELPHI}                             {compiler: assume Delphi if not FPC}
 {$ENDIF}
 
 {$IFDEF FPC}
   {$MODE DELPHI} {$PACKENUM 1}                 {use this with FPC only}
-  {$UNDEF DELPHI}                              {for safety}
-  {$M 1048576,0}                               {stack size, minimum 1 MiB}
-{$ENDIF}
-
-{$IFDEF CPU386}
-  {$DEFINE X86_32}                             {the program is implemented as a 32-bit version}
 {$ENDIF}
 
 {$DEFINE LIGHTWEIGHT_DEADLOCK_GENERATION}      {this generates a reasonable number of deadlocks and works pretty fast}
