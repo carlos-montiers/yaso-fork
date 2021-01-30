@@ -9,7 +9,7 @@ Although it has some limitations:
 
 This fork bypass those limits and achieve:
 - 64-bit.
-- A max memory limit of 1 TB !!
+- A max memory limit of 256 GiB !
 - Delphi 10 and Free Pascal compilers.
 
 Usage:
