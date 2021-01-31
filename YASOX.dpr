@@ -54,7 +54,6 @@ You should have received a copy of the GNU General Public License along with thi
   {$DEFINE X86_32}                             {the program is implemented as a 32-bit version}
 {$ENDIF}
 
-{$M 1048576,16777216}                          {stack size: minimum 1 MiB, maximum 16MiB}
 {$APPTYPE CONSOLE}                             {specify type of application}
 
 {///$DEFINE DELPHI}                            {compiler: use only one of these: DELPHI or FPC}
@@ -72,6 +71,18 @@ You should have received a copy of the GNU General Public License along with thi
 
 {$IFDEF FPC}
   {$MODE DELPHI} {$PACKENUM 1}                 {use this with FPC only}
+  {$MINSTACKSIZE 1048576}                      {stack size: minimum 1 MiB}
+  {$IFDEF CPU386}
+    {$MAXSTACKSIZE 2097152}                    {stack size: maximum 2 MiB}
+  {$ELSE}
+    {$MAXSTACKSIZE 16777216}                   {stack size: maximum 16 MiB}
+  {$ENDIF}
+{$ELSE}
+  {$IFDEF CPU386}
+    {$M 1048576,2097152}                       {stack size: minimum 1 MiB, maximum 2 MiB}
+  {$ELSE}
+    {$M 1048576,16777216}                      {stack size: minimum 1 MiB, maximum 16 MiB}
+  {$ENDIF}
 {$ENDIF}
 
 {$DEFINE LIGHTWEIGHT_DEADLOCK_GENERATION}      {this generates a reasonable number of deadlocks and works pretty fast}
