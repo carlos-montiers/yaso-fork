@@ -57,8 +57,8 @@ You should have received a copy of the GNU General Public License along with thi
 {$M 1048576,16777216}                          {stack size: minimum 1 MiB, maximum 16MiB}
 {$APPTYPE CONSOLE}                             {specify type of application}
 
-{///$DEFINE DELPHI}                            {compiler: use only one of these: DELPHI of FPC}
-{///$DEFINE FPC}                               {compiler: use only one of these: DELPHI of FPC}
+{///$DEFINE DELPHI}                            {compiler: use only one of these: DELPHI or FPC}
+{///$DEFINE FPC}                               {compiler: use only one of these: DELPHI or FPC}
 {$IFDEF DELPHI}
   {$UNDEF FPC}                                 {for safety}
 {$ENDIF}
@@ -167,7 +167,6 @@ const
 
 {$IFDEF WINDOWS}
   type
-    UInt64                       = Int64; {Delphi 4: no unsigned 64-bit integer}
     DWORDLONG                    = UInt64;
     TMemoryStatusEx              = record
       dwLength                   : DWORD;
@@ -441,7 +440,7 @@ const
                               {$IFDEF X86_32}
                                 MaxInt - 16*ONE_MEBI;
                               {$ELSE}
-                                256*ONE_GIBI;  {more will require increasing capacity to 64-bit}
+                                256*ONE_GIBI;  {more will require increasing positions capacity to 64-bit}
                               {$ENDIF}
                            {$ENDIF}
   MAX_VICINITY_SQUARES     = {MAX_BOARD_WIDTH*MAX_BOARD_HEIGHT} 999; {the only reason for the 999-limit is that it allows a settings window to operate with 3-digits only for the spin-edit controls}
