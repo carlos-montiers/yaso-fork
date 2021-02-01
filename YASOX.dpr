@@ -5863,7 +5863,7 @@ var {Index,}Square,NeighborSquare:Integer; Direction:TDirection;
     StackTop:^Integer; Stack:array[0..MAX_BOARD_SIZE] of Integer;
 begin {Returns result in the global value 'Solver.SearchStates[Index__].PlayersReachableSquares'}
   with Solver.SearchStates[Index__].PlayersReachableSquares do begin
-    if False and {'False': re-using the player's reachable squares isn't fully implemented, hence it's disabled here}
+    (*if False and {'False': re-using the player's reachable squares isn't fully implemented, hence it's disabled here}
        UsePlayersReachableSquaresFromPredecessor and
        (Index__>Low(Solver.SearchStates)) then begin
        UsePlayersReachableSquaresFromPredecessor:=False;
@@ -5878,7 +5878,7 @@ begin {Returns result in the global value 'Solver.SearchStates[Index__].PlayersR
                   Squares[NeighborSquare]:=Succ(TimeStamp);
                end;
        end
-    else begin
+    else*) begin
        if TimeStamp>=PLAYERS_REACHABLE_SQUARES_TIMESTAMP_UPPER_BOUND then ClearPlayersReachableSquares(Index__);
        Inc(TimeStamp,2); {reachable empty floors = timestamp; reachable boxes = timestamp + 1}
        end;
