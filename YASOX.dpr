@@ -11378,7 +11378,8 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                                   //Write(Optimizer.GameMetrics.MoveCount,SLASH,Optimizer.GameMetrics.PushCount);
                                   //Readln;
 
-                                  if Optimizer.GameMetrics.MoveCount<High(POptimizerPosition(NewPosition)^.MoveCount) then begin // '<': reserves highvalue (e.g., 65535 when the move count is a 16 bit unsigned number) for internal use
+                                  if Optimizer.GameMetrics.MoveCount<High(POptimizerPosition(NewPosition)^.MoveCount) then begin
+                                  // '<': reserves highvalue (e.g., 65535 when the move count is a 16 bit unsigned number) for internal use
                                      if TTLookup(0,ppmExact,dUp,Position) then begin // 'True':  the position already exists
                                         if WasALegalPush(Position)
                                            or
