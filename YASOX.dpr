@@ -67,6 +67,8 @@ You should have received a copy of the GNU General Public License along with thi
 
 {$DEFINE WINDOWS}                              {use this on the Windows platform only}
 
+{$ALIGN 8}                                     {record type field alignment}
+
 {$IFDEF CPU386}
   {$DEFINE X86_32}                             {the program is implemented as a 32-bit version}
 {$ENDIF}
