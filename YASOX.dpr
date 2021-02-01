@@ -6,6 +6,23 @@ Copyright (c) 2002-2020 by Brian Damgaard (Denmark)
 Copyright (c) 2021 by Jason Hood (Australia)
 Copyright (c) 2021 by Carlos Montiers Aguilera (Chile)
 
+This is a Fork of the original YASO program.
+
+The original YASO program is a great software. Although it has some limitations:
+- 32-bit straight-jacket.
+- A max memory limit usage of 1500 MB.
+- Delphi 4 compiler only.
+
+This fork bypass those limits and achieve:
+- 64-bit.
+- A max memory limit of 256 GiB !
+- Delphi 10 and Free Pascal compilers.
+
+History of the Fork:
+2018 July    : Carlos begin interest on bypass the memory limits of Sokoban Yasc.
+2020 April   : Creation of the fork project with Jason Hood.
+2021 February : First x64 stable version.
+
 This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
 
 This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more details.
