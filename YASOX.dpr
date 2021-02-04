@@ -15467,6 +15467,7 @@ A---B-
              for Index:=1 to Game.BoxCount do Inc(Game.Board[Game.BoxPos[Index]],BOX); {put boxes back on the board}
 
              Optimizer.Threads.ActiveThreadsCount:=0;          // let the main thread generate the box configurations
+             Result:=True;
 
              try
                // for each position on the best found path, generate permuted positions taking the vicinity constraints into account
