@@ -66,6 +66,7 @@ You should have received a copy of the GNU General Public License along with thi
 {$ENDIF}
 
 {$DEFINE WINDOWS}                              {use this on the Windows platform only}
+{$DEFINE WIN_MT_VS1}                           {use multithread Windows implementation on phase 1 of Vicinity Search}
 
 {$ALIGN 8}                                     {record type field alignment}
 
@@ -460,7 +461,11 @@ const
                            = 400*ONE_KIBI;
   MAX_SEARCH_TIME_LIMIT_MS = High(Integer)-1001; {'-1001': high-values are reserved for meaning 'unlimited'}
   MAX_SINGLE_STEP_MOVES    = MAX_BOARD_WIDTH*MAX_BOARD_HEIGHT+DIRECTION_COUNT*MAX_BOX_COUNT;
-  MAX_THREAD_COUNT         = 1;                {given the other limitations of the optimizer it probably doesn't make sense to activate too many processors}
+  {$IFDEF WIN_MT_VS1}
+  MAX_THREAD_COUNT         = 8;                {given the other limitations of the optimizer it probably doesn't make sense to activate too many processors}
+  {$ELSE}
+  MAX_THREAD_COUNT         = 1;
+  {$ENDIF}
   MAX_TRANSPOSITION_TABLE_BYTE_SIZE            {limit the transposition table byte size to a signed integer and leave some memory free for other purposes}
                            : UInt              {for 64-bit}
                            =
@@ -934,10 +939,14 @@ type
     ActiveThreadsCountDown : Integer; // number of active threads still running
     AnActiveThread         : Integer; // one of the still running threads,if any; 'NONE' when all threads have finished
     Count                  : Integer; // the thread count must be a signed integer and not an unsigned integer
+    CriticalSection        : TRTLCriticalSection;
     LockstepCountForMoves  : TLockstepCount;     // for lockstep synchronization when threads advance from one search depth to the next
     LockstepCountForPushes : TLockstepCount;     // for lockstep synchronization when threads advance from one search depth to the next
     LockstepCountForSpans  : TLockstepCount;     // for lockstep synchronization when threads advance from one span of game states to the next; a span contains game states which all are reachable with the same number of moves and pushes
+    ProcessorCount         : Integer;
+    ThreadFinishedEvents   : array[0..MAX_THREAD_COUNT-1] of THandle;
     Threads                : array[0..MAX_THREAD_COUNT-1] of TOptimizerThread;
+    ThreadStartEvents      : array[0..MAX_THREAD_COUNT-1] of THandle;
                              end;
   TSquareGoalDistance      = array[0..MAX_BOARD_SIZE,TBoxNo] of UInt8; {'UInt8': otherwise the table gets unreasonable large; distances above 254 are truncated, and '255' is reserved for meaning 'INFINITY', i.e., no path to the square}
   TPackingOrder            = record
@@ -1457,6 +1466,7 @@ var
   function  Finalize:Boolean;
   function  GameHistoryMovesAsText:String;
   function  GetPhysicalMemoryByteSize:UInt;
+  function  GetNumberOfProcessors:UInt;
   procedure InitializeBoard(BoardWidth__,BoardHeight__:Integer; FillSquares__:Boolean);
   function  InitializeGame(var PluginResult__:TPluginResult; var ErrorText__:String):Boolean;
   function  Initialize(MemoryByteSize__:UInt;
@@ -1485,6 +1495,7 @@ var
                        OptimizationMethodEnabled__:TOptimizationMethodEnabled;
                        OptimizationMethodOrder__:TOptimizationMethodOrder;
                        Optimization__:TOptimization;
+                       ThreadCount__:Integer;
                        VicinitySettings__:TVicinitySettings;
                        SokobanCallBackFunction__:TSokobanCallBackFunction;
                        SokobanStatusPointer__:PSokobanStatus;
@@ -1510,6 +1521,7 @@ type
                                : TMemorySize;
     MemoryPageByteSize         : TMemorySize; // memory page size, in bytes
     PhysicalMemoryByteSize     : TMemorySize; // physical memory size, in bytes
+    PhysicalProcessorCount     : Cardinal;    // number of physical processors
   end;
 
 var
@@ -1555,6 +1567,19 @@ function  GetAvailableUserMemoryByteSize:UInt;
   end;
 {$ENDIF}
 
+function  GetNumberOfProcessors:UInt32;
+{$IFDEF WINDOWS}
+  var SystemInformation:TSystemInfo;
+  begin
+    GetSystemInfo(SystemInformation);
+    Result:=SystemInformation.dwNumberOfProcessors;
+  end;
+{$ELSE}
+  begin // no system information
+    Result := 1;
+  end;
+{$ENDIF}
+
 function  GetPhysicalMemoryByteSize:UInt;
 {$IFDEF WINDOWS}
   var MemoryStatusEx:TMemoryStatusEx;
@@ -1591,6 +1616,7 @@ procedure GetSystemInformation(
 
       MemoryAllocationGranularity := SystemInformation.dwAllocationGranularity;
       MemoryPageByteSize          := SystemInformation.dwPageSize;
+      PhysicalProcessorCount      := SystemInformation.dwNumberOfProcessors;
       PhysicalMemoryByteSize      := UInt(MemoryStatusEx.ullTotalPhys);
       end;
   end;
@@ -1656,6 +1682,34 @@ begin // releases a memory region to the operating system;
 end;
 
 {-----------------------------------------------------------------------------}
+{Thread Synchronization Primitives}
+{$IFDEF WIN_MT_VS1}
+
+// Memory barrier
+// --------------
+// A memory barrier prevents the CPU from re-ordering reads and writes
+
+{$IFDEF FPC}
+{$IFDEF X86_32}
+  // a global variable is used so the memory barrier procedure doesn't need to
+  // create a stack frame for a local variable;
+  var
+    MemoryBarrierVariable : UInt;
+  procedure MemoryBarrier; assembler;
+  asm
+    // 'XCHG' a memory variable has an implied 'LOCK', hence, no 'LOCK' prefix
+    xchg MemoryBarrierVariable, EAX
+  end;
+{$ELSE} // X86_64
+  procedure MemoryBarrier; assembler;
+  asm
+    mfence // (SSE2)
+  end;
+{$ENDIF}
+{$ENDIF}
+
+{$ENDIF}
+{-----------------------------------------------------------------------------}
 {Forward Declarations}
 
 {$IFNDEF PLUGIN_MODULE} {if the module is compiled as a plugin (a dll), then 'BoardToText' is declared in the interface section}
@@ -1719,8 +1773,16 @@ begin
   Result:=String(AResult);
 end;
 
-procedure DoNothing;
-begin
+function  CloseHandle( var Handle__ : THandle ) : Boolean;
+begin // closes a Windows handle; Windows raises an exception if the handle is
+      // invalid, hence the 'try/except' wrapper to catch that situation;
+  try    Result := ( Handle__ = 0 ) or                    // un-initialized
+                   ( Handle__ = INVALID_HANDLE_VALUE ) or // invalid
+                   Windows.CloseHandle( Handle__ );       // try to close handle
+         if Result then    // 'True': success
+            Handle__ := 0; // clear the handle so the caller cannot use it again
+  except Result := False;
+  end;
 end;
 
 function  FileNameWithExtension(const FileName__,Extension__:String):String;
@@ -2127,6 +2189,10 @@ function  PerformSokobanCallBackFunction:Integer;
 var Index:Integer;
 begin {returns a non-zero value if the solver should terminate}
   if   Assigned(Solver.SokobanCallBackFunction) then with Solver.SokobanStatusPointer^ do begin
+       {$IFDEF WIN_MT_VS1}
+       EnterCriticalSection(Optimizer.Threads.CriticalSection);
+       {$ENDIF}
+       try
          MovesGenerated :=Solver.MoveCount;
          PushesGenerated:=Solver.PushCount;
          StatesGenerated:=Int64(YASO.Positions.Count)+YASO.Positions.SearchStatistics.DroppedCount;
@@ -2137,6 +2203,11 @@ begin {returns a non-zero value if the solver should terminate}
                 end;
          TimeMS:=UInt32(Game.InitializationTimeMS+Solver.TimeMS+Optimizer.TimeMS);
          Result:=Solver.SokobanCallBackFunction();
+       finally
+       {$IFDEF WIN_MT_VS1}
+       LeaveCriticalSection(Optimizer.Threads.CriticalSection);
+       {$ENDIF}
+       end;
        end
   else Result:=0;
 end;
@@ -2147,6 +2218,10 @@ procedure SetSokobanStatusText(const Text__:String);
 {$ENDIF}
 begin
   with Solver.SokobanStatusPointer^ do begin
+    {$IFDEF WIN_MT_VS1}
+    EnterCriticalSection(Optimizer.Threads.CriticalSection);
+    {$ENDIF}
+    try
       {$IFDEF CONSOLE_APPLICATION}
         StatusText:=Text__;
         Writeln(StatusText);
@@ -2155,6 +2230,11 @@ begin
         if CharCount<>0 then System.Move(PChar(Addr(Text__[1]))^,PChar(Addr(StatusText))^,CharCount*SizeOf(Char));
         StatusText[Low(StatusText)+CharCount]:=NULL_CHAR; // add null-terminator
       {$ENDIF}
+    finally
+    {$IFDEF WIN_MT_VS1}
+    LeaveCriticalSection(Optimizer.Threads.CriticalSection);
+    {$ENDIF}
+    end;
     end;
 end;
 
@@ -2594,6 +2674,9 @@ begin
   Writeln('  -order     g|p|r|v| : enabled methods: Global, Perm., Rearran., Vicinity');
   Writeln('  -quick     <no|yes>          : optimizer quick vicinity-search enabled');
   Writeln('  -search    <method>          : optimize (default and only option)');
+  {$IFDEF WIN_MT_VS1}
+  Writeln('  -threads   0..',MAX_THREAD_COUNT,'              : number of parallel worker threads');
+  {$ENDIF}
   Writeln('  -vicinity  <number> ...      : vicinity squares per box (maximum 4 boxes)');
 end;
 
@@ -10191,6 +10274,7 @@ begin {InitializeGame}
     end;
 end;
 
+(*
 function  ReduceBoxChanges:Integer;
   // precondition: the history contains the game to be optimized; modifies the game-state ('Board', 'PlayerPos', BoxPos') destructively
 var
@@ -10405,6 +10489,7 @@ begin // ReduceBoxChanges; precondition: the history contains the game to be opt
 //Write('Reduce boxchanges: ',Result); Readln;
 //WritelnToLogFile('Optimizations: '+IntToStr(Result)+',  Time (milliseconds): '+IntToStr(Optimizer.TimeMS));
 end; // ReduceBoxChanges
+*)
 
 function  ReplayGame(const Moves__:String):Boolean;
 var {$IFDEF CONSOLE_APPLICATION}
@@ -10583,6 +10668,271 @@ begin
 end; {TimeCheck}
 
 {-----------------------------------------------------------------------------}
+{Optimizer Threads}
+{$IFDEF WIN_MT_VS1}
+
+function  ExecuteOptimizerThread( ThreadIndex__ : Integer ) : Cardinal; stdcall;
+begin
+  try
+    with Optimizer.Threads do with Threads[ ThreadIndex__ ] do begin
+         State     := tsIdle; // set state to 'idle'
+         repeat
+                if Ord( SignalObjectAndWait(
+                          ThreadFinishedEvents[ ThreadIndex__ ],
+                          ThreadStartEvents   [ ThreadIndex__ ],
+                          INFINITE, False ) )
+                   = WAIT_OBJECT_0 then begin // 'True': wake up
+                   Result := ERROR_SUCCESS;
+                   //Writeln( 'Optimizer thread ', ThreadIndex__,' ready');
+                   if   ( State in [tsStart..tsStop] ) and
+                        Assigned( ThreadFunction ) then begin
+
+                        EnterCriticalSection( CriticalSection );
+                        try     if AnActiveThread = NONE then
+                                   AnActiveThread := ThreadIndex__;
+                                if State<>tsStop then
+                                   State := tsBusy; // update thread state
+                        finally LeaveCriticalSection( CriticalSection );
+                        end;
+
+                        ThreadFunction( ThreadIndex__ ); // start the thread
+                        end
+                   else begin SleepEx( 0, False ); // do nothing
+                        end;
+                   end
+                else begin // something went wrong
+                   Result := ERROR_SUCCESS + 1;
+                   SleepEx( 1000, False );
+                   end;
+         until  State >= tsTerminate;
+
+         State := tsTerminated;
+         MemoryBarrier;
+         if   SetEvent( ThreadFinishedEvents[ ThreadIndex__ ] ) then
+              // setting the 'work completed' signal succeeded
+              //Writeln( 'Optimizer thread ', ThreadIndex__,' done')
+         else Result := ERROR_SUCCESS + 2 // failed
+         end;
+  except {$IFDEF DEFINE PLUGIN_MODULE}
+           on E:Exception do Msg('Optimizer thread error: ' + E.Message,
+                                 TEXT_APPLICATION_ERROR );
+         {$ENDIF}
+         Result := ERROR_SUCCESS + 3;
+  end;
+end;
+
+function  FinalizeOptimizerThreads:Boolean;
+var Index : Integer;
+begin
+  Result := True;
+  with Optimizer.Threads do begin
+    // terminate and destroy the optimizer worker threads
+    for Index := 0 to Pred( Count ) do
+        with Threads[ Index ] do
+             if ( Handle <> 0 ) and
+                ( Handle <> INVALID_HANDLE_VALUE ) // 'True': thread exists
+                then begin
+                // make the thread terminate when it wakes up
+                if State <> tsTerminated then
+                   State := tsTerminate;
+                MemoryBarrier; // flush any pending memory updates
+                // wake up the thread
+                Result:= SetEvent( ThreadStartEvents[ Index ] ) and Result;
+                // wait for it to finish
+                if   WaitForSingleObject( Handle, INFINITE ) = WAIT_OBJECT_0 then
+                     if   CloseHandle( Handle ) then // close thread handle
+                     else Result := False
+                else Result := False
+         end;
+
+    // destroy 'start' and 'finished' events for all the optimizer worker threads
+    for Index  := 0 to Pred( Count ) do
+        Result := CloseHandle( ThreadStartEvents   [ Index ] )
+                  and
+                  CloseHandle( ThreadFinishedEvents[ Index ] )
+                  and
+                  Result;
+
+    if Count<>0 then begin // 'True': destroy locks;
+       Count:=0;
+       // destroy critical section
+       DeleteCriticalSection( CriticalSection );
+       end;
+    end;
+end;
+
+function  WaitForOptimizerThreads(StopThreads__:Boolean):Boolean; forward;
+
+function  InitializeOptimizerThreads( ThreadCount__ : Integer ) : Boolean;
+var Index, MaximumThreadCount : Integer; MemoryPageByteSize : Cardinal;
+    {$IFDEF Windows} SystemInformation:TSystemInfo; {$ENDIF}
+begin // initializes the optimizer threads
+  Result := True;
+  FillChar( Optimizer.Threads, SizeOf( Optimizer.Threads ), 0 );
+  // initialize locks;
+  InitializeCriticalSection( Optimizer.Threads.CriticalSection );
+  with Optimizer.Threads do
+    try
+      {$IFDEF Windows}
+        GetSystemInfo( SystemInformation );
+        MemoryPageByteSize          := SystemInformation.dwPageSize;
+        ProcessorCount              := Max(1,Integer(SystemInformation.dwNumberOfProcessors));  // save the number of processors
+        MaximumThreadCount          := Min( Min( MAX_THREAD_COUNT, MAXIMUM_WAIT_OBJECTS ), ProcessorCount ); // calculate the maximum number of worker threads
+      {$ELSE}
+        MemoryPageByteSize          := 8 * ONE_KIBI;
+        NumberOfProcessors          := 1;
+        MaximumThreadCount          := Max( 0, Min( Min( MAX_THREAD_COUNT, MAXIMUM_WAIT_OBJECTS ), ThreadCount__ );
+      {$ENDIF}
+      if         ThreadCount__      <  MaximumThreadCount then                  // 'True': the user hasn't specified more than the maximum number of threads
+         if      ThreadCount__      >  1 then                                   // 'True': the user has specified 2 or more worker threads; use this number of threads
+                 MaximumThreadCount := ThreadCount__
+         else if ThreadCount__      >= 0 then                                   // 'True': the user has specified 0..1 threads
+                 MaximumThreadCount := 0;                                       // the main thread performs the search itself
+
+      // create optimizer threads
+      for Index := 0 to Pred( MaximumThreadCount ) do
+          if Result then with Threads[ Index ] do begin
+             if True then
+                Handle := CreateThread(
+                             nil,
+                             MemoryPageByteSize,
+                             @ExecuteOptimizerThread,
+                             Pointer( Index ),
+                             CREATE_SUSPENDED,
+                             Identifier )
+             else begin // main thread
+                Handle     := GetCurrentThread;   // a pseudohandle
+                Identifier := GetCurrentThreadId;
+                end;
+             Result := Handle <> 0;
+             if Result then begin // 'True': creating the thread succeeded
+                // set thread priority
+                SetThreadPriority( Handle, THREAD_PRIORITY_NORMAL );
+                // assign thread function
+                ThreadFunction:=Addr(Optimize);
+                // create 'start' and 'finished' events for the thread
+                ThreadStartEvents  [ Index ] :=
+                  CreateEvent(nil, False, False, nil ); // 'False': auto-reset
+                ThreadFinishedEvents[ Index ] :=
+                  CreateEvent(nil, False, False, nil ); // 'False': auto-reset
+                Result :=
+                   ( ThreadStartEvents   [ Index ] <> 0 ) and
+                   ( ThreadFinishedEvents[ Index ] <> 0 );
+                if   Result then begin // 'True': events OK; now start thread
+                     // update the number of created threads
+                     Inc( Count );
+                     // flush pending memory updates before the thread starts
+                     MemoryBarrier;
+                     Result := ResumeThread( Handle ) <= 1;
+                     if not Result then // 'True': starting the thread failed
+                        Dec( Count ); // adjust the number of created threads
+                     end;
+                end;
+             if not Result then begin // 'True': something failed; bail out;
+                // destroy the thread events
+                CloseHandle( ThreadStartEvents   [ Index ] );
+                CloseHandle( ThreadFinishedEvents[ Index ] );
+                CloseHandle( Handle ); // destroy thread
+                end;
+             end;
+      if Result and (Count>0) then begin // 'True': creating threads succeeded
+         ActiveThreadsCount:=Count; // all threads have been started
+         // wait until all the threads have initialized themselves
+         Result:=WaitForOptimizerThreads(False);
+         end;
+    finally
+      if not Result then begin
+         if Count=0 then Count:=-1; // '<>0': destroy locks
+         FinalizeOptimizerThreads;
+         end;
+    end;
+end; // InitializeOptimizerThreads
+
+procedure OptimizerThreadHasFinished( ThreadIndex__ : Integer );
+var Index:Integer;
+begin // performs cleanup when an optimizer thread has finished its job
+  with Optimizer.Threads do with Threads[ThreadIndex__] do begin
+    EnterCriticalSection( CriticalSection );
+    try
+      InterlockedDecrement( ActiveThreadsCountDown );                           // update the number of still running worker threads
+      if State<>tsUninitialized then State:=tsIdle;
+      if ThreadIndex__ = AnActiveThread then begin                              // 'True': find another still running thread, if any
+         AnActiveThread := NONE;
+         if ActiveThreadsCountDown <> 0 then
+            for Index := Low( Threads ) to Pred( ActiveThreadsCount ) do
+                if Threads[ Index ].State in [ tsStart..tsStop ] then begin
+                   AnActiveThread := Index; break;                              // 'break': quick-and-dirty exit the loop when a still running thread has been found
+                   end;
+         end;
+    finally LeaveCriticalSection( CriticalSection );
+    end;
+    end;
+end;
+
+function  ResumeOptimizerThreads(ThreadCount__:Integer):Boolean;
+var Index:Integer;
+begin // resumes the given number of optimizer worker threads;
+      // precondition: the threads have been initialized by calling
+      //               'InitializeOptimizerThreads()';
+  Result:=True;
+  with Optimizer.Threads do begin
+   ThreadCount__                    :=Max(0,Min(ThreadCount__,Count));
+   ActiveThreadsCount               :=ThreadCount__; // must be initialized to "all active threads" before any of the threads start running; otherwise, a thread may misinterpret a zero value as an indication of that all threads have finished
+   ActiveThreadsCountDown           :=ThreadCount__; // likewise
+   LockstepCountForMoves            :=0;
+   LockstepCountForPushes           :=0;
+   LockstepCountForSpans            :=0;
+   AnActiveThread                   :=NONE;
+   for Index:=0 to Pred(ThreadCount__) do begin
+       if Result then begin
+          Threads[Index].State:=tsStart;
+          MemoryBarrier; // flush any pending memory updates
+          Result:=SetEvent(ThreadStartEvents[Index]);
+          end;
+       if not Result then begin // 'True': the worker thread wasn't activated; update counts accordingly
+          InterlockedDecrement(ActiveThreadsCount);     // atomic update;
+          InterlockedDecrement(ActiveThreadsCountDown); // atomic update;
+          end;
+       end;
+   end;
+end;
+
+function  WaitForOptimizerThreads(StopThreads__:Boolean):Boolean;
+var Index:Integer; WaitResult:TWaitResult;
+begin // waits for the optimizer worker threads to finish their work assignment;
+      // precondition: the first 'Count__' worker threads are currently running
+  Result:=True;
+  with Optimizer.Threads do begin
+    if ActiveThreadsCount>0 then begin
+       if StopThreads__ then // 'True': send a 'stop' message to the worker threads
+          for Index:=0 to Pred(ActiveThreadsCount) do with Threads[Index] do
+              if State<tsStop then State:=tsStop;
+       MemoryBarrier; // flush any pending memory updates
+       WaitResult :=
+         WaitForMultipleObjects(
+           ActiveThreadsCount,PWOHandleArray( Addr( ThreadFinishedEvents ) ),
+           True, INFINITE );
+       Result := {$WARNINGS OFF} // comparison always evaluates to 'True'
+                   ( WaitResult >= WAIT_OBJECT_0 )
+                 {$WARNINGS ON}
+                 and
+                 ( WaitResult < WAIT_OBJECT_0 + UInt( ActiveThreadsCount ) );
+       MemoryBarrier; // flush any pending memory updates
+       end;
+    if Result then begin
+       ActiveThreadsCount    :=0;
+       ActiveThreadsCountDown:=0;
+       LockstepCountForMoves :=0;
+       LockstepCountForPushes:=0;
+       LockstepCountForSpans :=0;
+       AnActiveThread        :=NONE;
+       end;
+    end;
+end;
+
+{$ENDIF}
+{-----------------------------------------------------------------------------}
+{Optimizer}
 
 function  SearchStatePromptText:String;
 begin
@@ -10604,9 +10954,18 @@ end; // Optimize.SearchStatePromptText
 procedure ShowStatus;
 begin
   if Positions.BestPosition<>nil then begin
+     {$IFDEF WIN_MT_VS1}
+     EnterCriticalSection(Optimizer.Threads.CriticalSection);
+     {$ENDIF}
+     try
        Optimizer.SearchResultStatusText:=OptimizerMetricsAsText(Positions.BestPosition)+NL+
                                          LEFT_PAREN+OptimizerImprovementAsText(Positions.BestPosition)+RIGHT_PAREN;
+     finally
+     {$IFDEF WIN_MT_VS1}
+     LeaveCriticalSection(Optimizer.Threads.CriticalSection);
+     {$ENDIF}
      end;
+  end;
   SetSokobanStatusText(SearchStatePromptText+
                       {$IFDEF CONSOLE_APPLICATION}
                         TEXT_BEST_RESULT_SO_FAR+
@@ -14785,6 +15144,9 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                  Move(BoxConfiguration__,BoxConfiguration^,BoxConfigurationByteSize); // store the box configuration belonging to this tree item
                  Left :=nil;                                                    // 'nil': the new item is a leaf node
                  Right:=nil;                                                    // 'nil': the new item is a leaf node
+                 {$IFDEF WIN_MT_VS1}
+                 MemoryBarrier;
+                 {$ENDIF}                                                 // ensure that left and right pointers are updated before parallel worker threads get access to them, e.g., in "BTLookup()"
                  end;
               end;
           end; // BTMakeNewItem
@@ -14809,6 +15171,10 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
           end; // BTRotate
 
         begin // 'BTAdd'; returns 'True' if the box configuration is added to the tree; the new item, or the already existing item, is returned in 'Item__'
+          {$IFDEF WIN_MT_VS1}
+          EnterCriticalSection(Optimizer.Threads.CriticalSection);
+          {$ENDIF}
+          try
             Item__:=Tree__.Root; Depth:=0; Parents[0]:=nil; i:=-1;
             while (Item__<>nil) and (i<>0) and (Depth<High(Parents)) do begin   // 'i<>0': the item hasn't been found in the tree
               Inc(Depth); Parents[Depth]:=Item__;                               // remember what will be the parent item after descending one step further down the tree
@@ -14825,6 +15191,9 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                else with ExistingItem__^ do begin                               // re-use the existing node, e.g., when 'BTAdd' is called from 'BTMerge'; precondition: the existing item contains the box configuration 'BoxConfiguration__'
                   Left:=nil; Right:=nil;                                        // the item is now a new leaf node, hence, clear any old pointers
                   Item__:=ExistingItem__;
+                  {$IFDEF WIN_MT_VS1}
+                  MemoryBarrier;
+                  {$ENDIF}                                               // ensure that left and right pointers are updated before parallel worker threads get access to them, e.g., in "BTLookup()"
                   end;
                if Item__<>nil then begin
                   Inc(Positions.Count);                                         // update statistics
@@ -14872,6 +15241,11 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                   end
                else Result:=False;                                                // allocation of the new item failed, e.g., the memory is full
                end;
+          finally
+          {$IFDEF WIN_MT_VS1}
+          LeaveCriticalSection(Optimizer.Threads.CriticalSection);
+          {$ENDIF}
+          end;
         end; // BTAdd
 
         function  BTAverageNodeDepth(const Tree__:TBinaryTree):Double;
@@ -14892,6 +15266,9 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
         procedure BTInitialize(var Tree__:TBinaryTree);
         begin // initialize binary tree
           FillChar(Tree__,SizeOf(Tree__),0);
+          {$IFDEF WIN_MT_VS1}
+          MemoryBarrier;
+          {$ENDIF}
         end; // BTInitialize
 
         function  BTLookup(const BoxConfiguration__:TBoxConfiguration; const Tree__:TBinaryTree; var Item__:PBinaryTreeItem):Boolean;
@@ -15204,8 +15581,16 @@ A---B-
                                          BTAdd(BoxConfiguration,nil,Tree,Item) then begin // 'True': the current box configuration was added to the collection as a new item
                                          if   IsBasePosition__ and (Index=FirstIndex) then begin // 'True': this is the base position from the best found path
                                               BasePosition^.Position.Score:=1;  // use the 'Score' field as a flag telling that this position from the best found path has been added to the box configurations set
-
+                                              {$IFDEF WIN_MT_VS1}
+                                              EnterCriticalSection(Optimizer.Threads.CriticalSection);
+                                              {$ENDIF}
+                                              try
                                               Dec(Positions.Count);     // adjust the statistics; the base position has been counted earlier when it was created and now again when it was added to the tree
+                                              finally
+                                              {$IFDEF WIN_MT_VS1}
+                                              LeaveCriticalSection(Optimizer.Threads.CriticalSection);
+                                              {$ENDIF}
+                                              end;
                                          end;
                                          if ({Tree.Count}Item.Key) and ((1 shl 17)-1)=0 then begin // 'True': update the status and perform a time check
                                             if {Tree.Count}Item.Key and (ONE_MEBI-1)=0  then begin
@@ -15216,6 +15601,10 @@ A---B-
                                                // are added to a binary tree;
                                                // BTRebalance(Tree); // not enabled because the tree is rebalanced dynamically as a red-black tree
                                                end;
+                                            {$IFDEF WIN_MT_VS1}
+                                            EnterCriticalSection(Optimizer.Threads.CriticalSection);
+                                            {$ENDIF}
+                                            try
                                               Optimizer.SearchStateStatusText:={$IFDEF PLUGIN_MODULE}
                                                                                  //'('+
                                                                                  VicinitySettingsAsText+
@@ -15229,7 +15618,11 @@ A---B-
                                                                                  //+RIGHT_PAREN
                                                                                {$ENDIF}
                                                                                ;
-
+                                            finally
+                                            {$IFDEF WIN_MT_VS1}
+                                            LeaveCriticalSection(Optimizer.Threads.CriticalSection);
+                                            {$ENDIF}
+                                            end;
                                             {$IFDEF CONSOLE_APPLICATION}
                                               Writeln(SearchStatePromptText,
                                                       Optimizer.SearchStateStatusText
@@ -15465,9 +15858,16 @@ A---B-
                     TimeStamps.TimeStamp:=High(TimeStamps.TimeStamp);           // initialize calculation area for freeze deadlock detection
                     end;
              for Index:=1 to Game.BoxCount do Inc(Game.Board[Game.BoxPos[Index]],BOX); {put boxes back on the board}
-
              Optimizer.Threads.ActiveThreadsCount:=0;          // let the main thread generate the box configurations
+             {$IFDEF WIN_MT_VS1}
+             with Optimizer.Threads do begin
+             if (Count=2) and (ProcessorCount=2) then ActiveThreadsCount:=2            // use two worker threads running in parallel with the main thread
+             else if Count> 2                    then ActiveThreadsCount:=Pred(Count); // use one worker thread less than the total number of threads, so the main thread counts towards the limit
+             Result:=ResumeOptimizerThreads(ActiveThreadsCount);                      // start worker threads, if any
+             end;
+             {$ELSE}
              Result:=True;
+             {$ENDIF}
 
              try
                // for each position on the best found path, generate permuted positions taking the vicinity constraints into account
@@ -15489,6 +15889,9 @@ A---B-
                    LoadBoxConfigurationFromGame(BoxConfiguration);              // make the bit-set representation of the current position (boxes only, the player position isn't taken into account)
                    Move(Game.BoxPos,BoxSquares,Succ(Game.BoxCount)*SizeOf(Game.BoxPos[0])); // copy the current box squares to the worker thread
                    Move(Game.DeadlockSets.Capacity,DeadlockSetCapacities,Succ(Game.DeadlockSets.Count)*SizeOf(Game.DeadlockSets.Capacity[0])); // copy the current deadlock-set capacities to the worker thread
+                   {$IFDEF WIN_MT_VS1}
+                   MemoryBarrier;
+                   {$ENDIF}                                   // flush any pending memory updates before the worker thread receives its new work assignment in 'BasePosition'
                    BasePosition:=Position;                                      // this makes the worker thread start generating box configurations based on the current game position
                    //while BasePosition<>nil do SleepEx(0,False);               // test: wait until the worker thread has finished
 
@@ -15514,6 +15917,12 @@ A---B-
                       with Solver.VicinitySearchThreadDataForGeneratingBoxConfigurations[Index] do
                         while BasePosition<>nil do SleepEx(0,False);            // wait until the worker thread has finished its current work assignment, if any
              finally
+               {$IFDEF WIN_MT_VS1}
+               if not WaitForOptimizerThreads(True) then begin
+                  TerminateSearch;
+                  Result:=RuntimeError(TEXT_GENERATING_POSITIONS + COLON + SPACE + TEXT_SUSPEND_OPTIMIZER_THREADS_FAILED);
+                  end;
+               {$ENDIF}
                // re-initialize the player's reachable squares work areas;
                // generating the box configurations has used the overlapping
                // worker thread areas;
@@ -15928,6 +16337,10 @@ A---B-
 
         begin // AllocateMemoryBlock; tries to allocate a memory block
           Result:=False; Block__:=nil;
+          {$IFDEF WIN_MT_VS1}
+          EnterCriticalSection(Optimizer.Threads.CriticalSection);
+          {$ENDIF}
+          try
             if (not Optimizer.V.SearchData.Threads[ThreadIndex__].SearchSliceHasTerminated) and // 'True': the search through the current slice of the game hasn't been terminated
                (MinBlockByteSize__>=Cardinal(SizeOf(Block__^))) then begin
                if FreeMemoryBlocks__.Root<>nil then begin                       // 'True': the free list isn't empty
@@ -15959,6 +16372,12 @@ A---B-
                   {$ENDIF}
                   end;
                end;
+
+          finally
+          {$IFDEF WIN_MT_VS1}
+          LeaveCriticalSection(Optimizer.Threads.CriticalSection);
+          {$ENDIF}
+          end;
         end; // AllocateMemoryBlock
 
         function  FindMemoryBlockWithItem(Item__:Pointer; const MemoryBlocks__:TMemoryBlockList):PMemoryBlock;
@@ -15997,8 +16416,14 @@ A---B-
                end;
         end; // FirstItemInBlock
 
-        procedure MemoryBlockListAddItem(Item__:PMemoryBlock; var List__:TMemoryBlockList);
+        procedure MemoryBlockListAddItem(Item__:PMemoryBlock; var List__:TMemoryBlockList; Lock__:Boolean);
         begin // adds a new item to the end of the list
+          {$IFDEF WIN_MT_VS1}
+          if Lock__ then begin
+             EnterCriticalSection(Optimizer.Threads.CriticalSection);
+          end;
+          {$ENDIF}
+          try
             if List__.Root<>nil then with Item__^ do begin                      // 'True': the list isn't empty; add the new item to the end of the list
                Previous:=List__.Root^.Previous;
                Next    :=List__.Root;
@@ -16008,11 +16433,22 @@ A---B-
             else with Item__^ do begin                                          // the list is empty
                List__.Root:=Item__; Previous:=Item__; Next:=Item__;             // make a single item circular list
                end;
+          finally
+          {$IFDEF WIN_MT_VS1}
+          if Lock__ then begin
+             LeaveCriticalSection(Optimizer.Threads.CriticalSection);
+          end;
+          {$ENDIF}
+          end;
         end; // MemoryBlockListAddItem
 
         procedure MemoryBlockListAddList(Head__:PMemoryBlock; var List__:TMemoryBlockList);
         var Last:PMemoryBlock;
         begin // adds a circular linked list of items to the list
+          {$IFDEF WIN_MT_VS1}
+          EnterCriticalSection(Optimizer.Threads.CriticalSection);
+          {$ENDIF}
+          try
             if Head__<>nil then                                                 // 'True': it isn't an empty list that is added
                if   List__.Root<>nil then begin
                     Last                  :=List__.Root^.Previous;              // last member of the original list
@@ -16022,6 +16458,11 @@ A---B-
                     Head__^.Previous      :=Last;
                     end
                else List__.Root:=Head__;
+          finally
+          {$IFDEF WIN_MT_VS1}
+          LeaveCriticalSection(Optimizer.Threads.CriticalSection);
+          {$ENDIF}
+          end;
         end; // MemoryBlockListAddList
 
         function  MemoryBlockListInitialize(var List__:TMemoryBlockList):Boolean;
@@ -16055,7 +16496,7 @@ A---B-
                if OldBlock^.ReferenceCount>0 then Dec(OldBlock^.ReferenceCount);
                if OldBlock^.ReferenceCount=0 then begin                         // 'True': release the old block
                   MemoryBlockListRemoveItem(OldBlock,Queue__.MemoryBlocks);     // remove the just finished memory block from the queue
-                  MemoryBlockListAddItem   (OldBlock,Optimizer.V.SearchData.FreeMemoryBlocks); // add the just finished block to the free-list
+                  MemoryBlockListAddItem   (OldBlock,Optimizer.V.SearchData.FreeMemoryBlocks,False); // add the just finished block to the free-list
                   end;
                if OldBlock=EndOfBlock__ then EndOfBlock__:=nil;                 // 'True': the last memory block on the circular list has been recycled
                end;
@@ -16094,7 +16535,7 @@ A---B-
                   else Bottom:=nil;                                             // 'nil': the queue is empty
                   OldBlock:=Root;
                   MemoryBlockListRemoveItem(OldBlock,SpanQueue__.MemoryBlocks); // remove the just finished memory block from the queue
-                  MemoryBlockListAddItem   (OldBlock,Optimizer.V.SearchData.FreeMemoryBlocks); // add the just finished block to the free-list
+                  MemoryBlockListAddItem   (OldBlock,Optimizer.V.SearchData.FreeMemoryBlocks,True); // add the just finished block to the free-list
                   end;
                end
             else InternalError('Dequeue span: Queue empty');
@@ -16108,7 +16549,7 @@ A---B-
             Result:=AllocateMemoryBlock(BlockByteSize__,NewBlock,Optimizer.V.SearchData.FreeMemoryBlocks);
             if Result then begin                                                // 'True': allocating a new memory block succeeded
                //NewBlock^.ReferenceCount:=1;                                   // initialize the reference count for the block (commented out because reference counts are not needed in the current implementation)
-               MemoryBlockListAddItem(NewBlock,MemoryBlocks);                   // add the new block to the list of blocks attached to the queue
+               MemoryBlockListAddItem(NewBlock,MemoryBlocks,True);              // add the new block to the list of blocks attached to the queue
 
                // a memory block is represented by its 'TMemoryBlock'
                // data-structure with the links to other blocks;
@@ -16486,7 +16927,11 @@ A---B-
                     (SliceStartPosition<>SliceEndPosition) and
                     MakeVisitedArea(VisitedArea) and                            // reserve and initialize a memory area to support the 'IsVisited()' and 'SetVisited()' functions
                     MakeThreadQueues(SearchDepth,Optimizer.V.SearchData.Threads) and // initialize the queues
-                    (not SearchSliceHasTerminatedForAllThreads);                // the search may have been terminated before it starts
+                    (not SearchSliceHasTerminatedForAllThreads)                 // the search may have been terminated before it starts
+                    {$IFDEF WIN_MT_VS1}
+                    and ResumeOptimizerThreads(ThreadCount)                     // start worker threads, if any
+                    {$ENDIF}
+                    ;
             if Result then begin
                VicinitySearchState:=vssSearch;                                  // 'True': update the vicinity search state so 'Finalize()' can see that the search has been started
                if ThreadCount=0 then with Optimizer.Threads do begin            // no worker threads; the main thread performs the search itself
@@ -16710,7 +17155,11 @@ A---B-
 
         begin // IsNewBetterPath; checks whether the new found path is better than the existing one, in which case the best path is updated
           Result:=False;
+          {$IFDEF WIN_MT_VS1}
+          EnterCriticalSection(Optimizer.Threads.CriticalSection);
+          {$ENDIF}
           with Optimizer.V.SearchData do
+            try
               if not SearchSliceResult then begin                               // 'True': no other worker thread has found a new better path yet; check if the current path is a new better path
                  MarkMemory(MemoryMark);
 
@@ -16724,6 +17173,22 @@ A---B-
                     // threads use the same memory area for their search queues;
                     SearchSliceResult:=True;                                    // block other worker threads out from reporting new better paths too
 
+                    {$IFDEF WIN_MT_VS1}
+                    MemoryBarrier;
+                    if Optimizer.Threads.Count>0 then begin                     // 'True': the search isn't performed by the main thread itself
+                       StopSearch;                                              // make all other worker threads finish, so this one is the only one still running
+                       ReleaseMemory(MemoryMark);                               // release any temporary memory allocated by 'MakePath';
+
+                       LeaveCriticalSection(Optimizer.Threads.CriticalSection); // release the lock so other worker threads aren't blocked; this is also a memory barrier, flushing all pending memory updates
+                       try
+                         while Optimizer.Threads.ActiveThreadsCountDown>1 do    // '1': self
+                           SleepEx(0,False);                                    // wait until the other worker threads have finished
+                       finally EnterCriticalSection(Optimizer.Threads.CriticalSection); // balance lock/unlock operations with the encompassing 'try..finally' block
+                               MarkMemory(MemoryMark);
+                       end;
+                    end;
+                    {$ENDIF}
+
                     Result:=SaveNewBestPath(PPosition(FirstPosition),NewBestPathIsASolution);
                     if not Result then                                          // 'True': something went wrong
                        SearchSliceResult:=False;                                // reset the result
@@ -16731,6 +17196,11 @@ A---B-
 
                  ReleaseMemory(MemoryMark);                                     // release any temporary memory allocated by 'MakePath'; if a new best path has been found then it doesn't matter; in that case, the caller must not continue the search anyway
                  end;
+            finally
+            {$IFDEF WIN_MT_VS1}
+            LeaveCriticalSection(Optimizer.Threads.CriticalSection);
+            {$ENDIF}
+            end;
         end; // IsNewBetterPath
 
         function  IsVisited(GameState__:TGameState):Boolean;
@@ -17838,6 +18308,10 @@ A---B-
                   end;
 
                if Result then begin
+                  {$IFDEF WIN_MT_VS1}
+                  EnterCriticalSection(Optimizer.Threads.CriticalSection);
+                  {$ENDIF}
+                  try
                     Optimizer.SearchStateStatusText:={$IFDEF PLUGIN_MODULE}
                                                        //'('+
                                                        VicinitySettingsAsText+
@@ -17872,6 +18346,11 @@ A---B-
                       TimeCheck; //ShowStatus;
                       if SearchHasTerminated then StopSearch;
                     {$ENDIF}
+                  finally
+                  {$IFDEF WIN_MT_VS1}
+                  LeaveCriticalSection( Optimizer.Threads.CriticalSection);
+                  {$ENDIF}
+                  end;
                   end;
                end;
             end;
@@ -17881,6 +18360,10 @@ A---B-
         var Index:Integer;
         begin // stops searching through the current slice of the best found path
           Result :=nil;                                                         // return 'nil' in case it comes in handy for the caller to use the function result, say, to update a loop control variable
+          {$IFDEF WIN_MT_VS1}
+          EnterCriticalSection(Optimizer.Threads.CriticalSection);
+          {$ENDIF}
+          try
             with Optimizer.V.SearchData  do begin
               with Threads[ThreadIndex__].Queues do begin                       // ensure that no more game-states are added to the queues
                 MovesQueue   .Block   :=MovesQueue   .Top;                      // fake that the queue is full; it makes calls to 'EnqueueGameState()' fail because allocating new memory blocks fail when 'SearchSliceHasTerminated' = 'True'
@@ -17897,6 +18380,11 @@ A---B-
                        Threads[Index].SearchSliceHasTerminated:=True;           // 'True': signals that the search through the current slice has terminated, and ensures that 'AllocateMemoryBlock()' fails, i.e., no more memory blocks are allocated
                        end;
               end;
+          finally
+          {$IFDEF WIN_MT_VS1}
+          LeaveCriticalSection(Optimizer.Threads.CriticalSection);
+          {$ENDIF}
+          end;
         end; // Optimize.Search.VicinitySearch.Search.StopSearch
 
         function  ThreadSearch:Boolean;
@@ -17904,19 +18392,42 @@ A---B-
           if   Optimizer.Optimization=opPushesOnly then
                Result:=OptimizePushesOnly
           else Result:=OptimizeMovesOrPushesOrBoxLines(Optimizer.Optimization);
+          {$IFDEF WIN_MT_VS1}
+          OptimizerThreadHasFinished(ThreadIndex__);                            // clean up after the thread has finished
+          {$ENDIF}
         end; // Optimize.Search.VicinitySearch.Search.ThreadSearch
 
       begin // Optimize.Search.VicinitySearch.Search
         Result:=False;
-        // this is the main thread; perform the vicinity search
+        {$IFDEF WIN_MT_VS1}
+        if ThreadIndex__<>NONE then // 'True': this is the vinicity search worker thread with the specified index
+           Result:=ThreadSearch
+        else
+        {$ENDIF}
+           begin
+           // this is the main thread; perform the vicinity search
            Optimizer.V.VicinitySearchState:=vssNone;                            // reset the vicinity search state so 'Finalize()' works correctly even if the call to 'Initialize()' function inside the 'try..finally' block fails
            Optimizer.V.SearchData.ThreadCount:=0;                               // ditto
-           if Initialize then                                                   // 'True': initialization succeeded, and the search hasn't been terminated
-                           Result:=ThreadSearch;                                // no worker threads; the main thread performs the search itself
+           try
+           if Initialize then
+              {$IFDEF WIN_MT_VS1}                                               // 'True': initialization succeeded, and the search hasn't been terminated
+              if   Optimizer.V.SearchData.ThreadCount>0 then begin              // 'True': worker threads perform the search
+                   if not WaitForOptimizerThreads(False) then begin             // wait for worker threads to finish
+                      TerminateSearch;
+                      RuntimeError(TEXT_SEARCH_STATUS_VICINITY_5 + TEXT_SUSPEND_OPTIMIZER_THREADS_FAILED);
+                   end;
+                   Result:=Optimizer.V.SearchData.SearchSliceResult;            // 'True': one of the worker threads has found a new better path
+              end
+              else
+              {$ENDIF}
+              Result:=ThreadSearch;                                             // no worker threads; the main thread performs the search itself
+           finally
            Result:=Finalize(Result);
+           end;
            {$IFDEF CONSOLE_APPLICATION}
              Writeln('Time: ',CalculateElapsedTimeS(Solver.StartTimeMS,GetTimeMS),' Box configurations: ',Optimizer.V.BoxConfigurations.Count);
            {$ENDIF}
+        end;
       end; // Optimize.Search.VicinitySearch.Search
 
     begin // Optimize.Search.VicinitySearch
@@ -18564,7 +19075,11 @@ begin
   CloseGraphFile; GraphFile.FileName:=''; {close the file and ensure that the string is cleared}
   CloseLogFile; LogFile.FileName:='';     {close the file and ensure that the string is cleared}
   Optimizer.SearchResultStatusText:=''; Optimizer.SearchStateStatusText:='';
+  {$IFDEF WIN_MT_VS1}
+  Result:=FinalizeOptimizerThreads;
+  {$ELSE}
   Result:=True;
+  {$ENDIF}
   FinalizeStatistics;
   TTFinalize;
   {$IFDEF CONSOLE_APPLICATION}
@@ -18598,6 +19113,7 @@ function  Initialize(MemoryByteSize__:UInt;
                      OptimizationMethodEnabled__:TOptimizationMethodEnabled;
                      OptimizationMethodOrder__:TOptimizationMethodOrder;
                      Optimization__:TOptimization;
+                     ThreadCount__:Integer;
                      VicinitySettings__:TVicinitySettings;
                      SokobanCallBackFunction__:TSokobanCallBackFunction;
                      SokobanStatusPointer__:PSokobanStatus;
@@ -18698,7 +19214,11 @@ begin
   else Solver.SokobanStatusPointer:=Addr(Solver.SokobanStatus);
   {initialize the locally defined solver status record (it's only used if a caller doesn't provide its own record)}
   Solver.SokobanStatus.Size:=SizeOf(Solver.SokobanStatus);
+  {$IFDEF WIN_MT_VS1}
+  Result:=InitializeOptimizerThreads(ThreadCount__);
+  {$ELSE}
   Result:=True;
+  {$ENDIF}
   if Result then SetSokobanStatusText('');
   Solver.Terminated:=False;
   Optimizer.Result:=prUnsolved;
@@ -18855,6 +19375,7 @@ end;
                                         Optimizer.MethodEnabled,
                                         Optimizer.MethodOrder,
                                         Optimizer.Optimization,
+                                        Optimizer.Threads.Count,
                                         Optimizer.VicinitySettings,
                                         nil, //SokobanCallbackFunction,
                                         nil,
