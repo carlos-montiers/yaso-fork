@@ -5048,7 +5048,7 @@ begin
         {calculate the size of the memory to reserve for the hash-buckets}
         HashBucketCount:=1; Capacity:=0;
         repeat i:=HashBucketCount shl 1;
-               HashBucketVectorSize:=Cardinal(i)*HashBucketItemSize;
+               HashBucketVectorSize:=UInt(i)*HashBucketItemSize;
                if   MemoryByteSize>=HashBucketVectorSize then begin
                     j:=(MemoryByteSize-HashBucketVectorSize) div PositionSize;  // calculate the number of positions after reservation of 'i' buckets
                     if j>0 then begin
@@ -5061,7 +5061,7 @@ begin
                (i>=High(HashBucketCount) div 2);
 
         HashBucketMask:=Pred(HashBucketCount); {masking a hash-value with 'HashBucketMask' produces a proper hash-bucket index}
-        HashBuckets   :=PPositionPointersVector(UInt(Positions)+UInt(Capacity*PositionSize)); {reserve the upper part of the allocated memory for the hash-buckets}
+        HashBuckets   :=PPositionPointersVector(UInt(Positions)+UInt(Capacity)*PositionSize); {reserve the upper part of the allocated memory for the hash-buckets}
         Result        :=Capacity<>0;
 
         Optimizer.PositionCapacity:=(UInt(Capacity)*SizeOf(TPosition)) div SizeOf(TOptimizerPosition); {the optimizer used an extended position record, hence, the position capacity is different for the optimizer}
