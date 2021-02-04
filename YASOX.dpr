@@ -11177,7 +11177,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                     Position__:=FreeList;                                       {get next free item}
                     FreeList  :=FreeList^.HashBucket.Next;                      {the free-list uses 'HashBucket.Next' for linking}
                     end
-            (*else if False and                                                   {'False': recycling the nodes one by one is disabled; the time overhead is too big, so it's better to purge all positions and start a new search based upon the best position}
+            (*else if False and                                                 {'False': recycling the nodes one by one is disabled; the time overhead is too big, so it's better to purge all positions and start a new search based upon the best position}
                     (OpenPositions.Count<>0) and
                     (SearchStatistics.ReuseCount<High(SearchStatistics.ReuseCount)) then begin
                     Position__:=OPENWorstUnprotected;
