@@ -11249,9 +11249,6 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                    DoPush(Move.BoxNo,TDirection(Ord(Move.Direction) and DIRECTION_BIT_MASK));
                    Move.Direction:=TDirection(Cardinal(Ord(Move.Direction)) or POSITION_PATH_TAG); {the position must be marked as being on the current path so 'SetPosition()' later can undo the push normally}
 
-                   {$WARNINGS OFF}
-                   if Optimizer.GameMetrics.MoveCount<=High(MoveCount) then begin
-                   {$WARNINGS ON}
                       if (CurrentPosition=BestPosition)
                          and
                          ((PushCount       <>Optimizer.GameMetrics.PushCount)
@@ -11292,9 +11289,6 @@ function  Optimize(ThreadIndex__:Integer):Boolean; // when 'ThreadIndex__' = 'NO
                       }
                       CurrentPosition      :=Successor;
                       end
-                   (*else
-                      Result:=False; {numeric overflow of the field holding the number of moves}*)
-                   end
               else Result:=False;
               end
            else Result:=False;
