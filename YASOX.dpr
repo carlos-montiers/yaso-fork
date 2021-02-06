@@ -116,12 +116,10 @@ You should have received a copy of the GNU General Public License along with thi
   interface
 {$ENDIF}
 
-{$IFDEF WINDOWS}
   uses
-       {$IFDEF PLUGIN_MODULE}
-          SysUtils,                            {for exception handling, e.g., in 'GetAsMuchMemoryAsPossible'}
-       {$ENDIF}
-       Windows;                                {for timing and memorystatus}
+  SysUtils
+{$IFDEF WINDOWS}
+  , Windows;
 {$ENDIF}
 
 {-----------------------------------------------------------------------------}
@@ -301,11 +299,29 @@ type
     Count                  : Integer;
     Moves                  : array[0..MAX_HISTORY_BOX_MOVES] of TMove;
                              end;
-  TOptimization            = (opMovesPushes,opPushesMoves,opPushesOnly,opBoxLinesMoves,opBoxLinesPushes); {order must not change, and the two boxlines optimizations must be the last ones; see also 'OPTIMIZATIONS_TO_SOKOBAN_PLUGIN_FLAGS'}
-  TOptimizationMethod      = (omBoxPermutations,omBoxPermutationsWithTimeLimit,omRearrangement,omVicinitySearch,omGlobalSearch); // order cannot change; except for the first element (the fallback strategy), they are defined in method invocation order
+  TOptimization            = ((* order must not change
+                              and the two boxlines optimizations must be the last ones;
+                              see also 'OPTIMIZATIONS_TO_SOKOBAN_PLUGIN_FLAGS' *)
+                              opMovesPushes,
+                              opPushesMoves,
+                              opPushesOnly,
+                              opBoxLinesMoves,
+                              opBoxLinesPushes
+                            );
+  TOptimizationMethod      = ((* order can change except for the first element
+                              (the fallback strategy),
+                              they are defined in method invocation order *)
+                              omBoxPermutations,
+                              omBoxPermutationsWithTimeLimit,
+                              omRearrangement,
+                              omVicinitySearch,
+                              omGlobalSearch,
+                              omNone
+                            );
   TOptimizationMethodEnabled
                            = array[TOptimizationMethod] of Boolean;
-  TOptimizationMethodOrder = array[0..Ord(High(TOptimizationMethod))-Ord(Low(TOptimizationMethod))] of TOptimizationMethod; // element 0 must always be the fallback strategy 'omBoxPermutations'
+  TOptimizationMethodOrder = // element 0 must always be the fallback strategy 'omBoxPermutations'
+                             array[0..4] of TOptimizationMethod;
   TOptimizationMethodSet   = set of TOptimizationMethod;
   TPluginResult            = (prOK,
                               prConstraintsViolation,
@@ -491,7 +507,14 @@ const
                            = (dDown,dRight,dUp,dLeft);
   OPTIMIZATION_METHOD_TO_CHAR {must be uppercase characters 'A'..'Z'; they are used for parsing, e.g., in 'GetCommandlineParameters()'}
                            : array[TOptimizationMethod] of Char
-                           = ('B','P','R','V','G'); {Box permutations, Box permutations with time limit, Rearrangement, Vicinity search, Global search}
+                           = (
+                              'B', {Box permutations}
+                              'P', {Box permutations with time limit}
+                              'R', {Rearrangement}
+                              'V', {Vicinity search}
+                              'G', {Global search}
+                              'N'  {None}
+                           );
   OPTIMIZATIONS_TO_SOKOBAN_PLUGIN_FLAGS
                            : array[TOptimization] of Integer
                            = (SOKOBAN_PLUGIN_FLAG_MOVES    +SOKOBAN_PLUGIN_FLAG_SECONDARY_PUSHES,  {opMovesPushes}
@@ -2108,30 +2131,71 @@ begin
   with Position__^.Move do Result:=(Ord(Direction) and POSITION_PATH_TAG)<>0;
 end;
 
-function  LoadOptimizationMethodSettingsFromString(Str__:String; var MethodEnabled__:TOptimizationMethodEnabled; var MethodOrder__:TOptimizationMethodOrder):Boolean;
-var i,j:Integer; Method:TOptimizationMethod;
-    NewMethodEnabled:TOptimizationMethodEnabled; NewMethodOrder:TOptimizationMethodOrder;
+function  LoadOptimizationMethodSettingsFromString(
+  Str__:String;
+  var MethodEnabled__:TOptimizationMethodEnabled;
+  var MethodOrder__:TOptimizationMethodOrder
+):Boolean;
+var i,j:Integer;
+    Method:TOptimizationMethod;
+    NewMethodEnabled:TOptimizationMethodEnabled;
+    NewMethodOrder:TOptimizationMethodOrder;
+    UpStr:String;
 begin
-  Result:=True;
-  for Method:=Low(NewMethodEnabled) to High(NewMethodEnabled) do NewMethodEnabled[Method]:=False;
-  NewMethodEnabled[Low(NewMethodEnabled)]:=DEFAULT_OPTIMIZER_FALLBACK_STRATEGY_ENABLED; {the first element is the fallback strategy}
-  for i:=Low(NewMethodOrder) to High(NewMethodOrder) do NewMethodOrder[i]:=Low(TOptimizationMethod); {initialize the new method order with the default method only}
 
-  for i:=1 to Min(Length(Str__),High(MethodOrder__)) do
+  UpStr:=UpperCase(Str__);
+  Result:=True;
+
+  {first order method must be omBoxPermutations and is the fallback strategy}
+
+  {initialize enabled methods}
+  {copy the omBoxPermutations value}
+  {because enable or disable it is through the -fallback parameter}
+  NewMethodEnabled[omBoxPermutations] := MethodEnabled__[omBoxPermutations];
+  {'Succ' to avoid the fixed fallback stragegy}
+  for Method:=Succ(Low(NewMethodEnabled)) to High(NewMethodEnabled) do begin
+    NewMethodEnabled[Method] := False;
+  end;
+
+  {initialize order}
+  NewMethodOrder[0] := omBoxPermutations;
+  for i:=1 to High(NewMethodOrder) do begin
+    NewMethodOrder[i] := omNone;
+  end;
+
+  {validate the input string}
+  for i:=1 to Length(UpStr) do begin
+    if Result then begin
+      Result:=False;
+      if (UpStr[i] = OPTIMIZATION_METHOD_TO_CHAR[omBoxPermutationsWithTimeLimit]) or
+         (UpStr[i] = OPTIMIZATION_METHOD_TO_CHAR[omRearrangement]) or
+         (UpStr[i] = OPTIMIZATION_METHOD_TO_CHAR[omVicinitySearch]) or
+         (UpStr[i] = OPTIMIZATION_METHOD_TO_CHAR[omGlobalSearch]) then Result:=True;
+    end;
+  end;
+
+  for i:=1 to Min(Length(UpStr),High(MethodOrder__)) do
       if Result then begin
          Result:=False;
-         for Method:=Succ(Low(Method)) to High(Method) do                       {'Succ': element 0 is the fixed fallback stragegy}
-             if OPTIMIZATION_METHOD_TO_CHAR[Method]=UpCase(Str__[i]) then begin
+         {'Succ' to avoid the fixed fallback strategy}
+         for Method:=Succ(Low(Method)) to High(Method) do begin
+             if OPTIMIZATION_METHOD_TO_CHAR[Method]=UpStr[i] then begin
                 Result:=True;
-                for j:=Succ(Low(NewMethodOrder)) to Pred(i) do                  {check for duplicates}
-                    if NewMethodOrder[j]=Method then Result:=False;             {'=': duplicate found}
-                NewMethodEnabled[Method]:=True; NewMethodOrder[i]:=Method;
+                {check for duplicates}
+                for j:=Succ(Low(NewMethodOrder)) to Pred(i) do begin
+                    {'=': duplicate found}
+                    if NewMethodOrder[j]=Method then Result:=False;
                 end;
+                NewMethodEnabled[Method] := True;
+                NewMethodOrder[i] := Method;
+             end;
          end;
+  end;
+
   if  Result then begin
-      MethodEnabled__:=NewMethodEnabled;
-      MethodOrder__  :=NewMethodOrder;
-      end;
+      MethodEnabled__ := NewMethodEnabled;
+      MethodOrder__   := NewMethodOrder;
+  end;
 end;
 
 function  ManhattanDistance(Square1__,Square2__:Integer):Integer;
@@ -2343,7 +2407,7 @@ function  GetCommandLineParameters(var InputFileName__:String;
                                    var Optimization__:TOptimization;
                                    var ThreadCount__:Integer;
                                    var VicinitySettings__:TVicinitySettings):Boolean;
-var i,j,ItemIndex:Integer; c:Cardinal; b:Boolean; sm:TSearchMethod; om:TOptimizationMethod; s:String;
+var i,j,ItemIndex:Integer; c:Cardinal; sm:TSearchMethod; om:TOptimizationMethod; s:String;
 
   function  GetParameter(var Value__:Cardinal; Min__,Max__,Scale__:Cardinal; var ItemIndex__:Integer):Boolean;
   begin
@@ -2439,7 +2503,11 @@ begin {a simple and not fool-proof implementation}
           'd'       : if           HasCharCI(s,'a') then {deadlock sets complexity}
                                    Result:=GetParameter(DeadlockSetsAdjacentOpenSquaresLimit__,0,3,0,ItemIndex)
                       else         Result:=False;
-          'f'       : Result:=GetBooleanValue(OptimizationMethodEnabled__[Low(OptimizationMethodEnabled__)]); // optimizer fallback strategy enabled/disabled
+          'f'       : begin
+                      // optimizer fallback strategy enabled/disabled
+                      // the fallback strategy is the "box permutations" method
+                      Result:=GetBooleanValue(OptimizationMethodEnabled__[omBoxPermutations]);
+                      end;
           'h','?'   : Result:=False; // force the program to show the help screen
           'l'       : if           HasCharCI(s,'o') then begin {log}
                                    LogFileEnabled__:=True; Inc(ItemIndex);
@@ -2520,9 +2588,7 @@ begin {a simple and not fool-proof implementation}
                             if ParamCount>=ItemIndex then begin
                                if (Length(s)>=3) and (LoCase(s[3])='r') then begin {-order, i.e., optimization method order}
                                   s:=ParamStr(ItemIndex); Inc(ItemIndex);
-                                  b:=OptimizationMethodEnabled__[Low(OptimizationMethodEnabled__)]; // remember the 'fallback strategy enabled' setting
                                   Result:=LoadOptimizationMethodSettingsFromString(s,OptimizationMethodEnabled__,OptimizationMethodOrder__);
-                                  OptimizationMethodEnabled__[Low(OptimizationMethodEnabled__)]:=b; // restore the 'fallback strategy enabled' setting
                                   end
                                else begin                                       {-optimize}
                                   s:=ParamStr(ItemIndex); Inc(ItemIndex);
