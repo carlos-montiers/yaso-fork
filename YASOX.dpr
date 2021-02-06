@@ -408,6 +408,8 @@ const
   DEFAULT_OPTIMIZER_ENABLED= True;                       {'True': perform small optimizations after the solver has found a solution; not to be confused with the optimizer module}
   DEFAULT_OPTIMIZER_FALLBACK_STRATEGY_ENABLED            {the default optimization strategy is the "N-box permutations", but without the time-limit that governs this method when it runs as one of the 3 selectable methods}
                            = False;
+  DEFAULT_OPTIMIZER_QUICK_VICINITY_SEARCH_ENABLED        {the default optimizer quick vicinity search}
+                           = True;
   DEFAULT_OPTIMIZER_SEARCH_DEPTH
                            = MAX_OPTIMIZER_SEARCH_DEPTH;
   DEFAULT_PACKING_ORDER_BOX_COUNT_THRESHOLD
@@ -2453,7 +2455,7 @@ begin {a simple and not fool-proof implementation}
   SearchMethod__:=DEFAULT_SEARCH_METHOD;
   SolverEnabled__:=False; //True;
   OptimizerEnabled__:=DEFAULT_OPTIMIZER_ENABLED;
-  OptimizerQuickVicinitySearchEnabled__:=True;
+  OptimizerQuickVicinitySearchEnabled__:=DEFAULT_OPTIMIZER_QUICK_VICINITY_SEARCH_ENABLED;
   ShowBestPosition__:=False;
   StopWhenSolved__:=DEFAULT_STOP_WHEN_SOLVED;
   Prompt__:=True;
@@ -2722,7 +2724,7 @@ begin
   Writeln('');
   Writeln('Options:');
   Writeln('  -deadlocks <number>          : deadlock sets complexity level 0-3, default ',DEFAULT_DEADLOCK_SETS_ADJACENT_OPEN_SQUARES_LIMIT);
-  Writeln('  -fallback  <y|n>             : optimizer fallback strategy, default: disabled');
+  Writeln('  -fallback  <yes|no>          : optimizer fallback strategy, default: no');
   Writeln('  -help                        : this overview');
   Writeln('  -level     <number> [ - <number> ] : level numbers to process, default: all');
   Writeln('  -log                         : save search information to a logfile');
@@ -2738,12 +2740,13 @@ begin
   {$ENDIF}
   Writeln('  -optimize  <moves|pushes|pushesonly|boxlines/m|boxlines/p> : default "pushes"');
   Writeln('  -order     g|p|r|v| : enabled methods: Global, Perm., Rearran., Vicinity');
-  Writeln('  -quick     <no|yes>          : optimizer quick vicinity-search enabled');
+  Writeln('  -quick     <yes|no>          : optimizer quick vicinity-search, default: yes');
   Writeln('  -search    <method>          : optimize (default and only option)');
   {$IFDEF WIN_MT_VS1}
   Writeln('  -threads   0..',MAX_THREAD_COUNT,'              : number of parallel worker threads');
   {$ENDIF}
-  Writeln('  -vicinity  <number> ...      : vicinity squares per box (maximum 4 boxes)');
+  Writeln('  -vicinity  <number> ...      : vicinity squares per box (maximum 4 boxes),');
+  Writeln('                                 default: 20 10');
 end;
 
 procedure ShowTitle;
