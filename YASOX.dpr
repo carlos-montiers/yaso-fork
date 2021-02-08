@@ -120,6 +120,7 @@ You should have received a copy of the GNU General Public License along with thi
   SysUtils
 {$IFDEF WINDOWS}
   , Windows;
+  function GetConsoleWindow: HWND; stdcall; external kernel32 name 'GetConsoleWindow';
 {$ENDIF}
 
 {-----------------------------------------------------------------------------}
@@ -1798,7 +1799,7 @@ begin
   Result:=String(AResult);
 end;
 
-function  CloseHandle( var Handle__ : THandle ) : Boolean;
+function  MyCloseHandle( var Handle__ : THandle ) : Boolean;
 begin // closes a Windows handle; Windows raises an exception if the handle is
       // invalid, hence the 'try/except' wrapper to catch that situation;
   try    Result := ( Handle__ = 0 ) or                    // un-initialized
@@ -2700,7 +2701,7 @@ begin
     if   UserInterface.Prompt or
          StrStartsWith(Text__   ,TEXT_INTERNAL_ERROR) or
          StrStartsWith(Caption__,TEXT_INTERNAL_ERROR) then begin
-         Write('Press [Enter]');
+         Write(TEXT_PRESS_ENTER);
          Readln;
          end;
   {$ELSE}
@@ -10899,9 +10900,9 @@ begin // initializes the optimizer threads
                 end;
              if not Result then begin // 'True': something failed; bail out;
                 // destroy the thread events
-                CloseHandle( ThreadStartEvents   [ Index ] );
-                CloseHandle( ThreadFinishedEvents[ Index ] );
-                CloseHandle( Handle ); // destroy thread
+                MyCloseHandle( ThreadStartEvents   [ Index ] );
+                MyCloseHandle( ThreadFinishedEvents[ Index ] );
+                MyCloseHandle( Handle ); // destroy thread
                 end;
              end;
       if Result and (Count>0) then begin // 'True': creating threads succeeded
@@ -19305,13 +19306,22 @@ end;
 {-----------------------------------------------------------------------------}
 {$IFDEF CONSOLE_APPLICATION}
 
+{$IFDEF WINDOWS}
+function IsOwnConsoleWindow: Boolean;
+var pid: DWORD;
+begin
+  GetWindowThreadProcessId (GetConsoleWindow,pid);
+  Result:= (pid = GetCurrentProcessId);
+end;
+{$ENDIF}
+
   {Application Toplevel}
 
   function  InitializeApplication:Boolean;
-  var FirstLevelNo,LastLevelNo:Cardinal; InputFileName:String;
+  var FirstLevelNo,LastLevelNo:Cardinal;
+      InputFileName:String;
   begin
     ShowTitle;
-    //Readln;
 
     {Write(SizeOf(TGame)); Readln;}
     {Write(SizeOf(TBoxNumberSet)); Readln;}
@@ -19464,9 +19474,14 @@ end;
        Writeln;
        end
     else begin
-       UserInterface.Prompt:=True;
-       ShowHelp; Msg('','');
-       end;
+      ShowHelp;
+      {$IFDEF WINDOWS}
+      if IsOwnConsoleWindow then begin
+        UserInterface.Prompt:=True;
+        Msg('','');
+      end;
+      {$ENDIF}
+    end;
   end;
 
   procedure RunApplication;
