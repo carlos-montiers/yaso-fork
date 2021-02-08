@@ -6174,16 +6174,16 @@ Deadlock Sets
 --------
 Legend:
 --------
-# :	A wall
-- :	A 'simple-illegal-box-square'.
-	They are marked directly in the board squares because
-	this is faster than using deadlock-sets.
-% :	A square in the set, it may or may not be a goal square.
+# :     A wall
+- :     A 'simple-illegal-box-square'.
+        They are marked directly in the board squares because
+        this is faster than using deadlock-sets.
+% :     A square in the set, it may or may not be a goal square.
 ? :     A square in the set unless the square is a wall.
 $ :     A box
 . :     A goal square
 * :     A box at a goal square
-X :	A non-empty square
+X :     A non-empty square
 --------
 
 Deadlock sets come in two flavors:
@@ -6272,7 +6272,7 @@ XX              of them is a box on a non-goal square. The non-wall
                 ======================
  # ##~~# #      The capacity of the set is the number of boxes
 #%%%%~~%%%#     that can be added before the line overflows,
-  #	#         hence, capacity = goals - boxes.
+  #     #       hence, capacity = goals - boxes.
 
 ---------
 09              Closed edges sharing a goal corner
