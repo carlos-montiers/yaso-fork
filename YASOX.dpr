@@ -2697,7 +2697,7 @@ begin
        if Caption__<>'' then Writeln(Caption__);
        if Text__   <>'' then Writeln(Text__);
        end;
-    Writeln('');
+    Writeln;
     if   UserInterface.Prompt or
          StrStartsWith(Text__   ,TEXT_INTERNAL_ERROR) or
          StrStartsWith(Caption__,TEXT_INTERNAL_ERROR) then begin
@@ -2722,7 +2722,7 @@ procedure ShowHelp;
 begin
   Writeln;
   Writeln('Usage: YASOX <filename> [options]');
-  Writeln('');
+  Writeln;
   Writeln('Options:');
   Writeln('  -deadlocks <number>          : deadlock sets complexity level 0-3, default ',DEFAULT_DEADLOCK_SETS_ADJACENT_OPEN_SQUARES_LIMIT);
   Writeln('  -fallback  <yes|no>          : optimizer fallback strategy, default: no');
