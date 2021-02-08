@@ -2155,7 +2155,7 @@ begin
   {copy the omBoxPermutations value}
   {because enable or disable it is through the -fallback parameter}
   NewMethodEnabled[omBoxPermutations] := MethodEnabled__[omBoxPermutations];
-  {'Succ' to avoid the fixed fallback stragegy}
+  {'Succ' to avoid the fixed fallback strategy}
   for Method:=Succ(Low(NewMethodEnabled)) to High(NewMethodEnabled) do begin
     NewMethodEnabled[Method] := False;
   end;
