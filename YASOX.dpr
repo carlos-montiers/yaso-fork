@@ -23,6 +23,10 @@ History of the Fork:
 2020 April   : Creation of the fork project with Jason Hood.
 2021 February : First x64 stable version.
 
+Carlos is thankful to:
+Ming Wu: for did a lot of testing and reporting bugs.
+Jason Hood: for his great contribution to 64-bit porting and fixing obscure overflow bugs.
+
 This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
 
 This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more details.
