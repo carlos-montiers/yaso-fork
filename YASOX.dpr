@@ -121,7 +121,8 @@ You should have received a copy of the GNU General Public License along with thi
 {$ENDIF}
 
   uses
-  SysUtils
+  SysUtils,
+  System.StrUtils
 {$IFDEF WINDOWS}
   , Windows;
   function GetConsoleWindow: HWND; stdcall; external kernel32 name 'GetConsoleWindow';
@@ -216,7 +217,7 @@ const
     PMemoryStatusEx              = ^TMemoryStatusEx;
 
   procedure GlobalMemoryStatusEx(var lpBuffer: TMemoryStatusEx); stdcall;
-            external 'kernel32.dll' name 'GlobalMemoryStatusEx';
+            external kernel32 name 'GlobalMemoryStatusEx';
 {$ENDIF}
 
 {-----------------------------------------------------------------------------}
@@ -485,7 +486,7 @@ const
   MAX_SEARCH_TIME_LIMIT_MS = High(Integer)-1001; {'-1001': high-values are reserved for meaning 'unlimited'}
   MAX_SINGLE_STEP_MOVES    = MAX_BOARD_WIDTH*MAX_BOARD_HEIGHT+DIRECTION_COUNT*MAX_BOX_COUNT;
   {$IFDEF WIN_MT_VS1}
-  MAX_THREAD_COUNT         = 8;                {given the other limitations of the optimizer it probably doesn't make sense to activate too many processors}
+  MAX_THREAD_COUNT         = 8;                {some tests reveal that using 8 threads is quicker than using 10 or 16}
   {$ELSE}
   MAX_THREAD_COUNT         = 1;
   {$ENDIF}
@@ -706,6 +707,7 @@ const
   TEXT_TRIVIAL_SOLUTION_1  = 'This level has a trivial 0-push solution.';
   TEXT_TRIVIAL_SOLUTION_2  = 'The search continues for a nontrivial solution.';
   TEXT_VERSION             = 'Version';
+  THREAD_COUNT_UNSPECIFIED = -1;
 
 {Types}
 
@@ -968,7 +970,7 @@ type
     ActiveThreadsCount     : Integer; // activated threads
     ActiveThreadsCountDown : Integer; // number of active threads still running
     AnActiveThread         : Integer; // one of the still running threads,if any; 'NONE' when all threads have finished
-    Count                  : Integer; // the thread count must be a signed integer and not an unsigned integer
+    Count                  : Integer; // the worker threads count must be a signed integer and not an unsigned integer
     CriticalSection        : TRTLCriticalSection;
     LockstepCountForMoves  : TLockstepCount;     // for lockstep synchronization when threads advance from one search depth to the next
     LockstepCountForPushes : TLockstepCount;     // for lockstep synchronization when threads advance from one search depth to the next
@@ -1949,6 +1951,24 @@ begin
   Val(s__,i__,ErrorPos); Result:=ErrorPos=0;
 end;
 
+function  TruncateToNearest(x:Integer; n:Integer):Integer;
+begin
+Result:= x - (x mod n);
+end;
+
+function  BooleanToYesNoString(const value:Boolean):String;
+begin
+  if Value then
+    Result:='yes'
+  else
+    Result:='no'
+end;
+
+function  GetMaximumThreadCount(ProcessorCount:Integer): Integer;
+begin
+Result := Min( Min( MAX_THREAD_COUNT, MAXIMUM_WAIT_OBJECTS ), ProcessorCount );
+end;
+
 {-----------------------------------------------------------------------------}
 {Utilities}
 
@@ -2414,7 +2434,11 @@ function  GetCommandLineParameters(var InputFileName__:String;
                                    var Optimization__:TOptimization;
                                    var ThreadCount__:Integer;
                                    var VicinitySettings__:TVicinitySettings):Boolean;
-var i,j,ItemIndex:Integer; c:Cardinal; sm:TSearchMethod; om:TOptimizationMethod; s:String;
+var i,j,ItemIndex:Integer;
+    c:Cardinal;
+    // sm:TSearchMethod;
+    om:TOptimizationMethod;
+    s,p:String;
 
   function  GetParameter(var Value__:Cardinal; Min__,Max__,Scale__:Cardinal; var ItemIndex__:Integer):Boolean;
   begin
@@ -2476,7 +2500,7 @@ begin {a simple and not fool-proof implementation}
   for i :=Low(OptimizationMethodOrder__  ) to High(OptimizationMethodOrder__  ) do OptimizationMethodOrder__  [i ]:=TOptimizationMethod(i); // optimization methods (except the fallback strategy) are invoked in definition order
   Optimization__:=DEFAULT_OPTIMIZATION;
   VicinitySettings__:=DEFAULT_VICINITY_SETTINGS;
-  ThreadCount__:=-1; // '-1': unspecified
+  ThreadCount__:=THREAD_COUNT_UNSPECIFIED;
   ItemIndex:=1;
 
   if Result and (ParamCount>=ItemIndex) then begin {get filename, if any}
@@ -2493,195 +2517,277 @@ begin {a simple and not fool-proof implementation}
      s:=ParamStr(ItemIndex);
      Result:=(Length(s)>=2) and ((s[1]=HYPHEN) or (s[1]=SLASH));
      if Result then
-        case LoCase(s[2]) of
-          'b'       : if           HasCharCI(s,'a') then begin {undocumented feature "-backwardsearchlimit": use a special backward search limit instead of 'maxdepth'}
-                                   Result:=GetParameter(BackwardSearchDepthLimit__,0,MaxInt,0,ItemIndex);
-                                   end
-                      else if      HasCharCI(s,'e') then begin {undocumented feature "-bestposition": show best found position when the solver doesn't find a solution}
-                                   ShowBestPosition__:=True; Inc(ItemIndex);
-                                   end
-                           else    Result:=False;
-          'c'       : if           HasCharCI(s,'h') then begin {undocumented feature "-check": only check existing solutions, e.g., to verify that the precalculated deadlock patterns are valid}
-                                   SolverEnabled__:=False; OptimizerEnabled__:=False;
-                                   SearchMethod__:=smForward; Inc(ItemIndex);
-                                   end
-                      else         Result:=False;
+        p:= LowerCase(Copy(s,2,20));
+        case LoCase(p[1]) of
 
-          'd'       : if           HasCharCI(s,'a') then {deadlock sets complexity}
-                                   Result:=GetParameter(DeadlockSetsAdjacentOpenSquaresLimit__,0,3,0,ItemIndex)
-                      else         Result:=False;
-          'f'       : begin
-                      // optimizer fallback strategy enabled/disabled
-                      // the fallback strategy is the "box permutations" method
-                      Result:=GetBooleanValue(OptimizationMethodEnabled__[omBoxPermutations]);
-                      end;
-          'h','?'   : Result:=False; // force the program to show the help screen
-          'l'       : if           HasCharCI(s,'o') then begin {log}
-                                   LogFileEnabled__:=True; Inc(ItemIndex);
-                                   end
-                      else         begin Result:=GetParameter(FirstLevelNo__,0,MaxInt,0,ItemIndex); {level from [ - to]}
-                                         if Result and (ItemIndex<=Pred(ParamCount)) and
-                                            (ParamStr(ItemIndex)=HYPHEN) then begin
-                                            Result:=GetParameter(LastLevelNo__,FirstLevelNo__,MaxInt,0,ItemIndex);
-                                            end;
-                                   end;
-          'm'       : if           HasCharCI(s,'u') then begin {MaxPushes}
-                                   Result:=GetParameter(c,0,High(c),ONE_MILLION,ItemIndex);
-                                   PushCountLimit__:=c;
-                                   if PushCountLimit__=0 then PushCountLimit__:=High(PushCountLimit__); {special: argument=0 -> limit:=none}
-                                   OptimizerPushCountLimit__:=PushCountLimit__;
-                                   end
-                      else if      (Length(s)>=5) and
-                                   ((s[5]='d') or (s[5]='D')) {MaxDepth} then
-                                   Result:=GetParameter(DepthLimit__,0,MAX_HISTORY_BOX_MOVES,0,ItemIndex)
-                           else if (Length(s)>=5) and
-                                   ((s[5]='t') or (s[5]='T')) {MaxTime} then begin
-                                   Result:=GetParameter(Cardinal(TimeLimitMS__),0,MAX_SEARCH_TIME_LIMIT_MS,1000,ItemIndex);
-                                   OptimizerTimeLimitMS__:=TimeLimitMS__;
-                                   end
-                                else if HasCharCI(s,'h') {Method} then begin
-                                        Inc(ItemIndex);
-                                        if ParamCount>=ItemIndex then begin
-                                           s:=Copy(ParamStr(ItemIndex),1,2); Inc(ItemIndex);
-                                           for i:=1 to Length(s) do s[i]:=LoCase(s[i]);
-                                           Result:=False;
-                                           if Length(s)>=2 then
-                                              for sm:=Low(sm) to High(sm) do
-                                                  if s=Copy(TEXT_SEARCH_METHOD[sm],1,2) then begin
-                                                     SearchMethod__:=sm; Result:=True;
-                                                     end;
-                                           end
-                                        else Result:=False;
-                                        end
-                                     else if (Length(s)>=4) and
-                                             ((s[4]='m') or (s[4]='M')) then begin {Memory}
-                                             MemoryByteSize__   :=GetPhysicalMemoryByteSize;
-                                             if MemoryByteSize__> MAX_TRANSPOSITION_TABLE_BYTE_SIZE then
-                                                MemoryByteSize__:=MAX_TRANSPOSITION_TABLE_BYTE_SIZE; // limit the transposition table byte size to a signed integer and leave some memory for other purposes
-                                             Result:=GetParameter(c,
-                                                                  0,
-                                                                 {$IFDEF WINDOWS}
-                                                                   Cardinal(MemoryByteSize__),
-                                                                 {$ELSE}
-                                                                   MAX_TRANSPOSITION_TABLE_BYTE_SIZE,
-                                                                 {$ENDIF}
-                                                                  1,ItemIndex);
-                                             if Result then
-                                                    MemoryByteSize__:=UInt(c)*ONE_MEBI;
-                                             if (not Result) and (Pred(ItemIndex)<=ParamCount) then begin
-                                                s:=ParamStr(Pred(ItemIndex));
-                                                if (s<>'') and ((s[1]='a') or (s[1]='A')) then begin
-                                                   {$IFDEF WINDOWS}
-                                                     MemoryByteSize__   :=GetAvailablePhysicalMemoryByteSize;
-                                                     if MemoryByteSize__> MAX_TRANSPOSITION_TABLE_BYTE_SIZE then
-                                                        MemoryByteSize__:=MAX_TRANSPOSITION_TABLE_BYTE_SIZE; // limit the transposition table byte size to a signed integer and leave some memory for other purposes
-                                                     Result:=True;
-                                                   {$ELSE}
-                                                     Msg('"-memory available": This parameter is only implemented in the Windows version.','');
-                                                   {$ENDIF}
-                                                   end;
-                                                end;
+          (*'b':
+          if CompareStr('backwardsearchlimit', p) = 0 then begin
+            // solver undocumented "-backwardsearchlimit": use a special backward search limit instead of 'maxdepth'
+            Result:=GetParameter(BackwardSearchDepthLimit__,0,MaxInt,0,ItemIndex);
+            end
+          else
+          if CompareStr('bestposition', p) = 0 then begin
+            // solver undocumented "-bestposition": show best found position when the solver doesn't find a solution
+            ShowBestPosition__:=True; Inc(ItemIndex);
+            end
+          else Result:=False;*)
 
-                                             end
-                                          else {move-optimal solution not implemented...
-                                               if (Length(s)>=3) and
-                                                  ((s[3]='o') or (s[3]='O')) then  begin //Moves
-                                                  FindPushOptimalSolution__:=False; Inc(ItemIndex);
-                                                  end
-                                               else
-                                               }
-                                                  Result:=False;
-          'o'       : begin Inc(ItemIndex);
-                            if ParamCount>=ItemIndex then begin
-                               if (Length(s)>=3) and (LoCase(s[3])='r') then begin {-order, i.e., optimization method order}
-                                  s:=ParamStr(ItemIndex); Inc(ItemIndex);
-                                  Result:=LoadOptimizationMethodSettingsFromString(s,OptimizationMethodEnabled__,OptimizationMethodOrder__);
-                                  end
-                               else begin                                       {-optimize}
-                                  s:=ParamStr(ItemIndex); Inc(ItemIndex);
-                                  if   s<>'' then
-                                       if      (s[1]='y') or (s[1]='Y') then    {-optimize yes}
-                                               OptimizerEnabled__:=True
-                                       else if (s[1]='n') or (s[1]='N') then    {-optimize no}
-                                               OptimizerEnabled__:=False
-                                       else if (s[1]='o') or (s[1]='O') then begin {-optimize only, that is, optimize an existing solution}
-                                               SolverEnabled__:=False;
-                                               OptimizerEnabled__:=True;
-                                               end
-                                       else if (s[1]='b') or (s[1]='B') then
-                                               if   HasCharCI(s,'p') then
-                                                    Optimization__:=opBoxLinesPushes {-optimize boxlines/pushes}
-                                               else Optimization__:=opBoxLinesMoves  {-optimize boxlines/moves}
-                                       else if (s[1]='m') or (s[1]='M') then    {-optimize moves/pushes}
-                                               Optimization__:=opMovesPushes
-                                       else if (s[1]='p') or (s[1]='P') then    {-optimize pushes/moves or pushes}
-                                               if   (Length(s)>=7) and
-                                                    ((s[7]='o') or (s[7]='O')) then
-                                                    Optimization__:=opPushesOnly  {-optimize pushesonly}
-                                               else Optimization__:=opPushesMoves {-optimize pushes/moves}
-                                       else if StrToInt(s,i) and
-                                               (i>=0) and (i<=MAX_OPTIMIZER_SEARCH_DEPTH) then
-                                               OptimizerDepthLimit__:=i
-                                       else Result:=False
-                                  else Result:=False;
-                                  end;
-                               end
-                            else Result:=False;
-                      end;
-          'p'       : begin
-                        if   Length(s)>=3 then
-                             if   (s[3]='a') or (s[3]='A') then {packing order}
-                                  Result:=GetParameter(PackingOrderBoxCountThreshold__,0,MaxInt,0,ItemIndex)
-                             else if   (s[3]='r') or (s[3]='R') then
-                                       if   (Length(s)>=4) and (s[4]='o') or (s[4]='O') then
-                                            Result:=GetBooleanValue(Prompt__) {"prompt", i.e., confirm messages yes/no}
-                                       else Result:=GetBooleanValue(OptimizerEnabled__) {"pretty" solutions, i.e., do small optimizations after the solver has found a solution}
-                                  else Result:=False
-                        else Result:=False;
-                      end;
-          'q'       : begin {optimizer quick vicinity-search enabled}
-                            Result:=GetBooleanValue(OptimizerQuickVicinitySearchEnabled__);
-                      end;
-          'r'       : begin {re-use nodes}
-                            Result:=GetBooleanValue(ReuseNodesEnabled__);
-                      end;
-          's'       : begin
-                        if (Length(s)>=3) and (s[3]='t') or (s[3]='T') then {stop when solved, i.e., don't search for shorter solutions}
-                           Result:=GetBooleanValue(StopWhenSolved__)
-                        else begin {search method}
-                           Inc(ItemIndex);
-                           if ParamCount>=ItemIndex then begin
-                              s:=Copy(ParamStr(ItemIndex),1,2); Inc(ItemIndex);
-                              for i:=1 to Length(s) do s[i]:=LoCase(s[i]);
-                              Result:=False;
-                              if Length(s)>=2 then
-                                 for sm:=Low(sm) to High(sm) do
-                                     if s=Copy(TEXT_SEARCH_METHOD[sm],1,2) then begin
-                                        SearchMethod__:=sm; Result:=True;
-                                        if SearchMethod__=smOptimize then begin
-                                           SolverEnabled__:=False;
-                                           OptimizerEnabled__:=True;
-                                           end;
-                                        end;
-                              end
-                           else Result:=False;
-                           end;
-                      end;
-          't'       : begin {parallel worker threads}
-                        Result:=GetParameter(Cardinal(ThreadCount__),0,MAX_THREAD_COUNT,0,ItemIndex)
-                      end;
-          'v'       : begin Inc(ItemIndex); i:=MAX_VICINITY_BOX_COUNT; {optimizer: vicinity settings}
-                            FillChar(VicinitySettings__,SizeOf(VicinitySettings__),0);
-                            while (ParamCount>=ItemIndex) and
-                                  (i>Low(VicinitySettings__)) and
-                                  StrToInt(ParamStr(ItemIndex),j) and
-                                  (j>0) and (j<=MAX_VICINITY_SQUARES) do begin
-                                  VicinitySettings__[i]:=j;
-                                  Dec(i);
-                                  Inc(ItemIndex);
-                                  end;
-                      end;
-          else        Result:=False;
+          (*'c':
+          if CompareStr('check', p) = 0 then begin
+            // undocumented "-check": only check existing solutions, e.g., to verify that the precalculated deadlock patterns are valid
+            SolverEnabled__:=False; OptimizerEnabled__:=False;
+            SearchMethod__:=smForward; Inc(ItemIndex);
+            end
+          else Result:=False;
+          *)
+
+          'd':
+          if (CompareStr('deadlocks', p) = 0) then begin
+            // deadlock sets complexity
+            Result:=GetParameter(DeadlockSetsAdjacentOpenSquaresLimit__,0,3,0,ItemIndex)
+            end
+          else Result:=False;
+
+          'f':
+          if CompareStr('fallback', p) = 0 then begin
+            // optimizer fallback strategy enabled/disabled
+            // the fallback strategy is the "box permutations" method
+            Result:=GetBooleanValue(OptimizationMethodEnabled__[omBoxPermutations]);
+            end
+          else Result:=False;
+
+          'h', '?':
+          // force the program to show the help screen
+          Result:=False;
+
+          'l':
+          if CompareStr('log', p) = 0 then begin
+            LogFileEnabled__:=True; Inc(ItemIndex);
+            end
+          else
+          if CompareStr('level', p) = 0 then begin
+            // level from [ - to]
+            Result:=GetParameter(FirstLevelNo__,0,MaxInt,0,ItemIndex);
+            if Result and (ItemIndex<=Pred(ParamCount)) and (ParamStr(ItemIndex)=HYPHEN) then begin
+              Result:=GetParameter(LastLevelNo__,FirstLevelNo__,MaxInt,0,ItemIndex);
+              end;
+            end
+          else Result:=False;
+
+          'm':
+          (*if CompareStr('maxpushes', p) = 0 then begin
+            // undocumented "-maxpushes"
+            Result:=GetParameter(c,0,High(c),ONE_MILLION,ItemIndex);
+            PushCountLimit__:=c;
+            if PushCountLimit__=0 then begin
+              // special: argument=0 -> limit:=none
+              PushCountLimit__:=High(PushCountLimit__);
+            end;
+            OptimizerPushCountLimit__:=PushCountLimit__;
+          end
+          else
+          if CompareStr('maxdepth', p) = 0 then begin
+            // undocumented "-maxdepth"
+            Result:=GetParameter(DepthLimit__,0,MAX_HISTORY_BOX_MOVES,0,ItemIndex)
+            end
+          else*)
+          if CompareStr('maxtime', p) = 0 then begin
+            Result:=GetParameter(Cardinal(TimeLimitMS__),0,MAX_SEARCH_TIME_LIMIT_MS,1000,ItemIndex);
+            OptimizerTimeLimitMS__:=TimeLimitMS__;
+            end
+          else
+          (*if CompareStr('method', p) = 0 then begin
+            // Method
+            Inc(ItemIndex);
+            if ParamCount>=ItemIndex then begin
+              s:=Copy(ParamStr(ItemIndex),1,2); Inc(ItemIndex);
+              for i:=1 to Length(s) do s[i]:=LoCase(s[i]);
+              Result:=False;
+              if Length(s)>=2 then
+                for sm:=Low(sm) to High(sm) do
+                  if s=Copy(TEXT_SEARCH_METHOD[sm],1,2) then begin
+                    SearchMethod__:=sm; Result:=True;
+                  end;
+              end
+            else Result:=False;
+            end
+          else*)
+          if CompareStr('memory', p) = 0 then begin
+            MemoryByteSize__   :=GetPhysicalMemoryByteSize;
+            if MemoryByteSize__> MAX_TRANSPOSITION_TABLE_BYTE_SIZE then begin
+              MemoryByteSize__:=MAX_TRANSPOSITION_TABLE_BYTE_SIZE; // limit the transposition table byte size to a signed integer and leave some memory for other purposes
+            end;
+            Result:=GetParameter(c, 0,
+                               {$IFDEF WINDOWS}
+                                 Cardinal(MemoryByteSize__)
+                               {$ELSE}
+                                 MAX_TRANSPOSITION_TABLE_BYTE_SIZE
+                               {$ENDIF}
+                               ,1,ItemIndex);
+            if Result then begin
+              MemoryByteSize__:=UInt(c)*ONE_MEBI;
+            end;
+
+            if (not Result) and (Pred(ItemIndex)<=ParamCount) then begin
+              s:=LowerCase(ParamStr(Pred(ItemIndex)));
+              if (s<>'') and (s[1]='a') // avail
+              then begin
+                 MemoryByteSize__   :=GetAvailablePhysicalMemoryByteSize;
+                 if MemoryByteSize__> MAX_TRANSPOSITION_TABLE_BYTE_SIZE then begin
+                  MemoryByteSize__:=MAX_TRANSPOSITION_TABLE_BYTE_SIZE; // limit the transposition table byte size to a signed integer and leave some memory for other purposes
+                 end;
+                 Result:=True;
+              end;
+            end;
+            end
+          (*else if CompareStr('moveoptimal', p) = 0 then begin
+            // move-optimal solution not implemented...
+            FindPushOptimalSolution__:=False; Inc(ItemIndex);
+            end*)
+          else Result:=False;
+
+          'o':
+            begin
+            Inc(ItemIndex);
+            if ItemIndex > ParamCount then
+              Result:=False
+            else
+            if CompareStr('order', p) = 0 then
+              begin
+              // -order, i.e., optimization method order
+              s:=ParamStr(ItemIndex); Inc(ItemIndex);
+              Result:=LoadOptimizationMethodSettingsFromString(s,OptimizationMethodEnabled__,OptimizationMethodOrder__);
+              end
+            else
+            if CompareStr('optimize', p) = 0 then
+              begin
+                // -optimize
+                s:=LowerCase(ParamStr(ItemIndex)); Inc(ItemIndex);
+                if s='' then
+                  Result:=False
+                (*else if (s[1]='y') or (s[1]='Y') then       {-optimize yes}
+                  OptimizerEnabled__:=True
+                else if (s[1]='n') or (s[1]='N') then       {-optimize no}
+                  OptimizerEnabled__:=False
+                else if (s[1]='o') or (s[1]='O') then begin {-optimize only, that is, optimize an existing solution}
+                  SolverEnabled__:=False;
+                  OptimizerEnabled__:=True;
+                  end*)
+                else if (s[1]='b') then
+                  if HasCharCI(s,'p') then
+                  Optimization__:=opBoxLinesPushes          {-optimize boxlines/pushes}
+                  else
+                  Optimization__:=opBoxLinesMoves           {-optimize boxlines/moves}
+                else if (s[1]='m') then       {-optimize moves/pushes}
+                  Optimization__:=opMovesPushes
+                else if (s[1]='p')  then       {-optimize pushes/moves or pushes}
+                  if (Length(s)>=7) and ((s[7]='o')) then
+                  Optimization__:=opPushesOnly              {-optimize pushesonly}
+                  else
+                  Optimization__:=opPushesMoves             {-optimize pushes/moves}
+                (*else if StrToInt(s,i) and (i>=0) and (i<=MAX_OPTIMIZER_SEARCH_DEPTH) then
+                  OptimizerDepthLimit__:=i*)
+                else
+                  Result:=False
+              end
+            else Result:=False
+            end;
+
+          'p':
+          (*if CompareStr('packingorder', p) = 0 then begin
+            // solver "-packingorder"
+            Result:=GetParameter(PackingOrderBoxCountThreshold__,0,MaxInt,0,ItemIndex);
+            end
+          else*)
+          if CompareStr('prompt', p) = 0 then begin
+            // undocumented "-prompt"
+            Result:=GetBooleanValue(Prompt__) {"prompt", i.e., confirm messages yes/no}
+            end
+          (*else
+          if CompareStr('pretty', p) = 0 then begin
+             // solver "-pretty" solutions, i.e., do small optimizations after the solver has found a solution
+             Result:=GetBooleanValue(OptimizerEnabled__)
+             end*)
+          else Result:=False;
+
+          'q':
+          if CompareStr('quick', p) = 0 then begin
+            // optimizer quick vicinity-search enabled
+            Result:=GetBooleanValue(OptimizerQuickVicinitySearchEnabled__);
+            end
+          else Result:=False;
+
+          (*'r':
+          if CompareStr('reusenodes', p) = 0 then begin
+            // solver undocumented "-reusenodes"
+            Result:=GetBooleanValue(ReuseNodesEnabled__);
+            end
+          else Result:=False;*)
+
+          (*'s':
+          if CompareStr('stop', p) = 0 then begin
+            // solver "-stop" when solved, i.e., don't search for shorter solutions
+            Result:=GetBooleanValue(StopWhenSolved__)
+            end
+          else
+          if CompareStr('search', p) = 0 then
+            begin
+              // search method
+              Inc(ItemIndex);
+              if ItemIndex > ParamCount then
+                Result:=False
+              else begin
+                s:=LowerCase(Copy(ParamStr(ItemIndex),1,2)); Inc(ItemIndex);
+                Result:=False;
+                if Length(s)>=2 then begin
+                   for sm:=Low(sm) to High(sm) do begin
+                       if s=Copy(TEXT_SEARCH_METHOD[sm],1,2) then begin
+                          SearchMethod__:=sm; Result:=True;
+                          if SearchMethod__=smOptimize then begin
+                             SolverEnabled__:=False;
+                             OptimizerEnabled__:=True;
+                          end
+                       end
+                   end;
+                end;
+              end;
+            end
+          else Result:=False;*)
+
+          't':
+          {$IFDEF WIN_MT_VS1}
+          if CompareStr('threads', p) = 0 then begin
+            Result:=GetParameter(
+              Cardinal(ThreadCount__),
+              1,
+              MAX_THREAD_COUNT,
+              0,
+              ItemIndex
+            );
+            end
+          else
+          {$ENDIF}
+          Result:=False;
+
+          'v':
+          if CompareStr('vicinity', p) = 0 then begin
+            // vicinity settings
+            Inc(ItemIndex);
+            i:=MAX_VICINITY_BOX_COUNT;
+            FillChar(VicinitySettings__,SizeOf(VicinitySettings__),0);
+            while (ParamCount>=ItemIndex) and
+                  (i>Low(VicinitySettings__)) and
+                  StrToInt(ParamStr(ItemIndex),j) and
+                  (j>0) and (j<=MAX_VICINITY_SQUARES) do
+                  begin
+                    VicinitySettings__[i]:=j;
+                    Dec(i);
+                    Inc(ItemIndex);
+                  end;
+            end
+          else Result:=False;
+
+        else Result:=False
        end; {case}
      end;
 
@@ -2727,28 +2833,34 @@ begin
   Writeln;
   Writeln('Usage: YASOX <filename> [options]');
   Writeln;
-  Writeln('Options:');
-  Writeln('  -deadlocks <number>          : deadlock sets complexity level 0-3, default ',DEFAULT_DEADLOCK_SETS_ADJACENT_OPEN_SQUARES_LIMIT);
-  Writeln('  -fallback  <yes|no>          : optimizer fallback strategy, default: no');
+  Writeln('General Options:');
+  Writeln('  -deadlocks <number>          : deadlock sets complexity level 0-3, default: ',
+    DEFAULT_DEADLOCK_SETS_ADJACENT_OPEN_SQUARES_LIMIT
+  );
+  Writeln('  -fallback  <yes|no>          : optimizer fallback strategy, default: ',
+    BooleanToYesNoString(DEFAULT_OPTIMIZER_FALLBACK_STRATEGY_ENABLED)
+  );
   Writeln('  -help                        : this overview');
-  Writeln('  -level     <number> [ - <number> ] : level numbers to process, default: all');
+  Writeln('  -level     <num>[-<num>]     : level numbers to process, default: all');
   Writeln('  -log                         : save search information to a logfile');
 //Writeln('  -maxpushes <number> (million): search limit, default none'); // DEFAULT_PUSH_COUNT_LIMIT div ONE_MILLION,' million');
 //Writeln('  -maxdepth  <number>          : search limit, default (and max.) ',MAX_HISTORY_BOX_MOVES,' pushes');
   Writeln('  -maxtime   <seconds>         : search limit, default (and max.) 49 days');
-  {$IFDEF WINDOWS}
-    Writeln
-         ('  -memory    <size>|avail (MiB): default ',CalculateDefaultMemoryByteSize div ONE_MEBI,' MiB. Available: physical memory');
-  {$ELSE}
-    Writeln
-         ('  -memory    <size>   (MiB)    : default ',CalculateDefaultMemoryByteSize div ONE_MEBI,' MiB');
-  {$ENDIF}
-  Writeln('  -optimize  <moves|pushes|pushesonly|boxlines/m|boxlines/p> : default "pushes"');
-  Writeln('  -order     g|p|r|v| : enabled methods: Global, Perm., Rearran., Vicinity');
-  Writeln('  -quick     <yes|no>          : optimizer quick vicinity-search, default: yes');
-  Writeln('  -search    <method>          : optimize (default and only option)');
+  Writeln('  -memory    <size>|avail      : transposition table size (MiB)');
+  Writeln('                                 default: ',
+         TruncateToNearest(CalculateDefaultMemoryByteSize div ONE_MEBI, 1000),
+         '(MiB), avail=free memory');
+  Writeln('  -optimize  <moves|pushes|pushesonly|boxlines/m|boxlines/p> : default: pushes');
+  Writeln('  -order     g|p|r|v|          : enabled methods, default: prvg');
+  Writeln('                                 Global, Permutations, Rearrangement, Vicinity');
+//Writeln('  -search    <method>          : optimize (default and only option)');
+  Writeln('Vicinity Search Options:');
+  Writeln('  -quick     <yes|no>          : initial quick vicinity search, default: ',
+    BooleanToYesNoString(DEFAULT_OPTIMIZER_QUICK_VICINITY_SEARCH_ENABLED)
+  );
   {$IFDEF WIN_MT_VS1}
-  Writeln('  -threads   0..',MAX_THREAD_COUNT,'              : number of parallel worker threads');
+  Writeln('  -threads   1..8              : number of parallel worker threads in phase 1,');
+  Writeln('                                 default and max: min(8, logical processors)');
   {$ENDIF}
   Writeln('  -vicinity  <number> ...      : vicinity squares per box (maximum 4 boxes),');
   Writeln('                                 default: 20 10');
@@ -10838,46 +10950,53 @@ end;
 function  WaitForOptimizerThreads(StopThreads__:Boolean):Boolean; forward;
 
 function  InitializeOptimizerThreads( ThreadCount__ : Integer ) : Boolean;
-var Index, MaximumThreadCount : Integer; MemoryPageByteSize : Cardinal;
-    {$IFDEF Windows} SystemInformation:TSystemInfo; {$ENDIF}
+var Index, MaximumThreadCount : Integer;
+    MemoryPageByteSize : Cardinal;
+    {$IFDEF Windows}
+    SystemInformation:TSystemInfo;
+    {$ENDIF}
 begin // initializes the optimizer threads
   Result := True;
+  // initialize all properties to 0
   FillChar( Optimizer.Threads, SizeOf( Optimizer.Threads ), 0 );
   // initialize locks;
   InitializeCriticalSection( Optimizer.Threads.CriticalSection );
   with Optimizer.Threads do
-    try
+    begin
       {$IFDEF Windows}
         GetSystemInfo( SystemInformation );
         MemoryPageByteSize          := SystemInformation.dwPageSize;
-        ProcessorCount              := Max(1,Integer(SystemInformation.dwNumberOfProcessors));  // save the number of processors
-        MaximumThreadCount          := Min( Min( MAX_THREAD_COUNT, MAXIMUM_WAIT_OBJECTS ), ProcessorCount ); // calculate the maximum number of worker threads
+        ProcessorCount              := Max(1,Integer(SystemInformation.dwNumberOfProcessors));
       {$ELSE}
         MemoryPageByteSize          := 8 * ONE_KIBI;
-        NumberOfProcessors          := 1;
-        MaximumThreadCount          := Max( 0, Min( Min( MAX_THREAD_COUNT, MAXIMUM_WAIT_OBJECTS ), ThreadCount__ );
+        ProcessorCount              := 1;
       {$ENDIF}
-      if         ThreadCount__      <  MaximumThreadCount then                  // 'True': the user hasn't specified more than the maximum number of threads
-         if      ThreadCount__      >  1 then                                   // 'True': the user has specified 2 or more worker threads; use this number of threads
-                 MaximumThreadCount := ThreadCount__
-         else if ThreadCount__      >= 0 then                                   // 'True': the user has specified 0..1 threads
-                 MaximumThreadCount := 0;                                       // the main thread performs the search itself
 
+      MaximumThreadCount := GetMaximumThreadCount(ProcessorCount);
+      if (ThreadCount__ <> THREAD_COUNT_UNSPECIFIED) and
+         (ThreadCount__ < MaximumThreadCount) then begin
+         MaximumThreadCount := ThreadCount__;
+      end;
+
+      if MaximumThreadCount > 1 then
+      // True: create worker threads. False: use the main thread
+      try
       // create optimizer threads
-      for Index := 0 to Pred( MaximumThreadCount ) do
+      for Index := 0 to Pred( MaximumThreadCount ) do begin
           if Result then with Threads[ Index ] do begin
-             if True then
+             // if True then begin
                 Handle := CreateThread(
                              nil,
                              MemoryPageByteSize,
                              @ExecuteOptimizerThread,
                              Pointer( Index ),
                              CREATE_SUSPENDED,
-                             Identifier )
-             else begin // main thread
-                Handle     := GetCurrentThread;   // a pseudohandle
-                Identifier := GetCurrentThreadId;
-                end;
+                             Identifier );
+             //   end
+             // else begin // main thread
+             //    Handle     := GetCurrentThread;   // a pseudohandle
+             //    Identifier := GetCurrentThreadId;
+             //    end;
              Result := Handle <> 0;
              if Result then begin // 'True': creating the thread succeeded
                 // set thread priority
@@ -10907,18 +11026,20 @@ begin // initializes the optimizer threads
                 MyCloseHandle( ThreadStartEvents   [ Index ] );
                 MyCloseHandle( ThreadFinishedEvents[ Index ] );
                 MyCloseHandle( Handle ); // destroy thread
-                end;
              end;
+          end;
+      end;
       if Result and (Count>0) then begin // 'True': creating threads succeeded
          ActiveThreadsCount:=Count; // all threads have been started
          // wait until all the threads have initialized themselves
          Result:=WaitForOptimizerThreads(False);
-         end;
-    finally
-      if not Result then begin
-         if Count=0 then Count:=-1; // '<>0': destroy locks
-         FinalizeOptimizerThreads;
-         end;
+      end;
+      finally
+        if not Result then begin
+          if Count=0 then Count:=THREAD_COUNT_UNSPECIFIED; // '<>0': destroy locks
+          FinalizeOptimizerThreads;
+        end;
+      end;
     end;
 end; // InitializeOptimizerThreads
 
