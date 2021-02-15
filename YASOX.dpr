@@ -179,7 +179,7 @@ type                                           {first some number types}
   UInt32                   = Cardinal;         {for historical reasons,  'Cardinal'  means unsigned 32 bit integer in Delphi4, but it's problematic to use a term like that with newer processors}
   UInt                     = UIntPtr;          {unsigned machine word integer; must be the same size as a pointer}
 
-  TTimeMS                  = {$IFDEF WINDOWS} DWORD; {$ELSE} UInt32; {$ENDIF}
+  TTimeMS                  = UInt64;
 
   {operating system types}
   TMemoryAddress           = UIntPtr;
@@ -483,7 +483,7 @@ const
                            = 90 {seconds} * ONE_THOUSAND; {milliseconds}
   MAX_PACKING_ORDER_PARK_BOXES_ATTEMPTS        {maximum park-box attempts for the packing order calculation; the number should be small enough to guarantee a reasonably small running time upper bound}
                            = 400*ONE_KIBI;
-  MAX_SEARCH_TIME_LIMIT_MS = High(Integer)-1001; {'-1001': high-values are reserved for meaning 'unlimited'}
+  MAX_SEARCH_TIME_LIMIT_MS = High(TTimeMS);    {'unlimited'}
   MAX_SINGLE_STEP_MOVES    = MAX_BOARD_WIDTH*MAX_BOARD_HEIGHT+DIRECTION_COUNT*MAX_BOX_COUNT;
   {$IFDEF WIN_MT_VS1}
   MAX_THREAD_COUNT         = 8;                {some tests reveal that using 8 threads is quicker than using 10 or 16}
@@ -1661,7 +1661,7 @@ procedure GetSystemInformation(
 function  GetTimeMS:TTimeMS;
 begin {returns a time measured in milliseconds; the base doesn't matter, the time is only used in relative calculations}
 {$IFDEF WINDOWS}
-  Result:=GetTickCount; {Windows function}
+  Result:=GetTickCount64; {Windows function}
 {$ELSE}
   Result:=0;            {no timing}
 {$ENDIF}
@@ -1949,6 +1949,32 @@ function  StrToInt(const s__:String; var i__:Integer):Boolean;
 var ErrorPos:Integer;
 begin
   Val(s__,i__,ErrorPos); Result:=ErrorPos=0;
+end;
+
+function  MyStrToCardinal(const s__:String; var i__:Cardinal):Boolean;
+var numberUInt64 : UInt64;
+begin
+  try
+    numberUInt64 := StrToUInt64(s__);
+    if numberUInt64 > High(Cardinal) then
+      Result:= False
+    else begin
+      i__ := Cardinal(numberUInt64);
+      Result := True;
+    end;
+  except
+    Result := False;
+  end;
+end;
+
+function  MyStrToUInt64(const s__:String; var i__:UInt64):Boolean;
+begin
+  try
+    i__ := StrToUInt64(s__);
+    Result := True;
+  except
+    Result := False;
+  end;
 end;
 
 function  TruncateToNearest(x:Integer; n:Integer):Integer;
@@ -2436,16 +2462,19 @@ function  GetCommandLineParameters(var InputFileName__:String;
                                    var VicinitySettings__:TVicinitySettings):Boolean;
 var i,j,ItemIndex:Integer;
     c:Cardinal;
+    TimeLimitNumber:UInt64;
     // sm:TSearchMethod;
     om:TOptimizationMethod;
     s,p:String;
+    modifier:String;
+    mScale:UInt64;
 
   function  GetParameter(var Value__:Cardinal; Min__,Max__,Scale__:Cardinal; var ItemIndex__:Integer):Boolean;
   begin
     Inc(ItemIndex__); {skip argument name}
     if Scale__<1 then Scale__:=1;
     Result:=(ItemIndex__<=ParamCount) and
-            StrToInt(ParamStr(ItemIndex__),Integer(Value__)) and
+            MyStrToCardinal(ParamStr(ItemIndex__),Value__) and
             (Value__>=Min__ div Scale__) and (Value__<=Max__ div Scale__);
     Value__:=Value__*Scale__;
     Inc(ItemIndex__); {advance to next parameter}
@@ -2492,8 +2521,8 @@ begin {a simple and not fool-proof implementation}
   LogFileEnabled__:=DEFAULT_LOG_FILE_ENABLED;
   PackingOrderEnabled__:=DEFAULT_PACKING_ORDER_ENABLED;
   PackingOrderBoxCountThreshold__:=DEFAULT_PACKING_ORDER_BOX_COUNT_THRESHOLD;
-  TimeLimitMS__:=High(TimeLimitMS__); // high-value = unlimited
-  OptimizerTimeLimitMS__:=High(OptimizerTimeLimitMS__); // high-value = unlimited
+  TimeLimitMS__:=MAX_SEARCH_TIME_LIMIT_MS;
+  OptimizerTimeLimitMS__:=MAX_SEARCH_TIME_LIMIT_MS;
   BoxPermutationsSearchTimeLimitMS__:= DEFAULT_OPTIMIZER_BOX_PERMUTATIONS_SEARCH_TIME_LIMIT_MS;
   for om:=Low(OptimizationMethodEnabled__) to High(OptimizationMethodEnabled__) do OptimizationMethodEnabled__[om]:=True;
   OptimizationMethodEnabled__[Low(OptimizationMethodEnabled__)]:=DEFAULT_OPTIMIZER_FALLBACK_STRATEGY_ENABLED; // 'Low()': fallback strategy is the first one of the methods
@@ -2591,9 +2620,45 @@ begin {a simple and not fool-proof implementation}
             Result:=GetParameter(DepthLimit__,0,MAX_HISTORY_BOX_MOVES,0,ItemIndex)
             end
           else*)
-          if CompareStr('maxtime', p) = 0 then begin
-            Result:=GetParameter(Cardinal(TimeLimitMS__),0,MAX_SEARCH_TIME_LIMIT_MS,1000,ItemIndex);
-            OptimizerTimeLimitMS__:=TimeLimitMS__;
+          if CompareStr('maxtime', p) = 0 then
+            begin
+              Inc(ItemIndex);
+              if ItemIndex > ParamCount then
+                Result := False
+              else
+              begin
+                s:=ParamStr(ItemIndex); Inc(ItemIndex);
+                mScale := 1; // second
+                modifier:= LowerCase(RightStr(s, 1));
+                if modifier <> '' then begin
+                  case modifier[1] of
+                    'm': mScale := 60;
+                    'h': mScale := 3600;
+                    'd': mScale := 3600 * 24;
+                    'w': mScale := 3600 * 24 * 7;
+                    '0'..'9': mScale := mScale;
+                    else Result := False;
+                  end
+                end;
+                if Result then begin
+                  if mScale <> 1 then begin
+                    // remove the modifier from s
+                    SetLength(s,Length(s)-1);
+                  end;
+                  Result := MyStrToUInt64(s,TimeLimitNumber);
+                  if Result then begin
+                     mScale := mScale * 1000; // to milliseconds
+
+                     if TimeLimitNumber <= ( High(TimeLimitMS__) div mScale ) then
+                      // if not overflow
+                      TimeLimitMS__ := TimeLimitNumber * mScale
+                     else
+                      TimeLimitMS__ := MAX_SEARCH_TIME_LIMIT_MS;
+
+                     OptimizerTimeLimitMS__ := TimeLimitMS__;
+                  end;
+                end;
+              end;
             end
           else
           (*if CompareStr('method', p) = 0 then begin
@@ -2845,7 +2910,8 @@ begin
   Writeln('  -log                         : save search information to a logfile');
 //Writeln('  -maxpushes <number> (million): search limit, default none'); // DEFAULT_PUSH_COUNT_LIMIT div ONE_MILLION,' million');
 //Writeln('  -maxdepth  <number>          : search limit, default (and max.) ',MAX_HISTORY_BOX_MOVES,' pushes');
-  Writeln('  -maxtime   <seconds>         : search limit, default (and max.) 49 days');
+  Writeln('  -maxtime   <number>[m|h|d|w] : search limit, seconds if no modifier:');
+  Writeln('                                 m=minutes, h=hours, d=days, w=weeks');
   Writeln('  -memory    <size>|avail      : transposition table size (MiB)');
   Writeln('                                 default: ',
          TruncateToNearest(CalculateDefaultMemoryByteSize div ONE_MEBI, 1000),
