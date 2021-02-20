@@ -1995,6 +1995,55 @@ begin
 Result := Min( Min( MAX_THREAD_COUNT, MAXIMUM_WAIT_OBJECTS ), ProcessorCount );
 end;
 
+procedure  BasicDump(
+  var Optimization:TOptimization;
+  var MethodOrder:TOptimizationMethodOrder;
+  var MethodEnabled:TOptimizationMethodEnabled;
+  var QuickVicinitySearchEnabled:Boolean;
+  var VicinitySettings:TVicinitySettings;
+  var ThreadsCount:Integer
+);
+var
+  i: Integer;
+  usesVicinitySearch: Boolean;
+begin
+  usesVicinitySearch := False;
+
+  Write('Optimize: ');
+  if Optimization = opMovesPushes then Write('Moves');
+  if Optimization = opPushesMoves then Write('Pushes');
+  if Optimization = opPushesOnly then Write('Pushesonly');
+  if Optimization = opBoxLinesMoves then Write('Boxlines/m');
+  if Optimization = opBoxLinesPushes then Write('Boxlines/p');
+  Writeln;
+
+  Writeln('Fallback Strategy: ', BooleanToYesNoString(MethodEnabled[omBoxPermutations]));
+  for i:= 1 to 4 do begin
+    if ((MethodOrder[i] <> omNone) and (MethodEnabled[MethodOrder[i]])) then begin
+      Write('Method[', i, '] = ');
+      if MethodOrder[i] = omBoxPermutationsWithTimeLimit  then Writeln('Permutations');
+      if MethodOrder[i] = omRearrangement  then Writeln('Rearrangement');
+      if MethodOrder[i] = omVicinitySearch  then begin
+        Writeln('Vicinity');
+        usesVicinitySearch := true;
+      end;
+      if MethodOrder[i] = omGlobalSearch  then Writeln('Global');
+    end;
+   end;
+
+   if usesVicinitySearch then begin
+    Writeln('Quick Vicinity Search: ', BooleanToYesNoString(QuickVicinitySearchEnabled));
+    Write('Vicinity Squares Per Box:');
+    for i:= 1 to 4 do begin
+      if VicinitySettings[i] <> 0 then
+          Write(' ', VicinitySettings[i]);
+    end;
+    Writeln;
+   end;
+
+   Writeln('Threads: ', Max(1, ThreadsCount));
+end;
+
 {-----------------------------------------------------------------------------}
 {Utilities}
 
@@ -19677,6 +19726,14 @@ end;
 
   procedure RunApplication;
   begin
+    BasicDump(
+      Optimizer.Optimization,
+      Optimizer.MethodOrder,
+      Optimizer.MethodEnabled,
+      Optimizer.QuickVicinitySearchEnabled,
+      Optimizer.VicinitySettings,
+      Optimizer.Threads.Count
+    );
     {$IFDEF WINDOWS}
       SetConsoleCtrlHandler(@CtrlC, True);
     {$ENDIF}
