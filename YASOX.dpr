@@ -226,10 +226,10 @@ const
 const
   MAX_BOARD_WIDTH          = 70;
   MAX_BOX_COUNT            = 1023;             {limited by the slot 'BoxNo' in 'TMove'; must be a 2^N-1 number where 'N' is an integer > 0, so the value can be used as a bit mask to isolate a box number or a goal number}
-  MAX_HISTORY_BOX_MOVES    = 100; {600;}       {actually, it's pushes, not moves; originally it was limited by stack-size, but the tables for the recursive search are now allocated outside the stack;}
+  MAX_HISTORY_BOX_MOVES    = 100;              {actually, it's pushes, not moves; originally it was limited by stack-size, but the tables for the recursive search are now allocated outside the stack;}
                                                {each +100 pushes cost approx. 1 MiB extra static data area}
   MAX_OPTIMIZER_SEARCH_DEPTH
-                           = 99;               {must be < 'MAX_HISTORY_BOX_MOVES' div 4}
+                           = 99;               {must be < 'MAX_HISTORY_BOX_MOVES'}
   MAX_ROOM_COUNT           = High(UInt8);      {maximum number of rooms on the board}
   MAX_SMALL_BOX_SET_COUNT  = BITS_PER_INTEGER; {must be a power of 2 so 'MAX_SMALL_BOX_SET_COUNT-1' can be used as a bit mask for modulo calculations}
 
