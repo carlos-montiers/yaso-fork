@@ -1,6 +1,6 @@
 {
 YASOX - Sokoban Solution Optimizer
-Fork Version: 2.144
+Fork Version: 2.144.0
 Forked Version: 2.144 - July 5, 2020
 Copyright (c) 2002-2020 by Brian Damgaard (Denmark)
 Copyright (c) 2021 by Jason Hood (Australia)
@@ -613,7 +613,7 @@ const
   TEXT_APPLICATION_TITLE_LONG
                            = TEXT_APPLICATION_TITLE+' - Sokoban Solution Optimizer';
   TEXT_APPLICATION_VERSION_NUMBER
-                           = '2.144';
+                           = '2.144.0';
   TEXT_BACKWARD_SEARCH     = 'Backward search';
   TEXT_BEST_RESULT_SO_FAR  = 'Best result so far: ';
   TEXT_CALCULATING_PACKING_ORDER
