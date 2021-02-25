@@ -167,6 +167,8 @@ const
 
   SIXTEEN_KIBI             = 16*ONE_KIBI;
 
+  HUNDRED_NANOSECONDS      = 10000000;
+
 {Constants and type declarations required before other constants and other
  types can be declared}
 
@@ -1659,9 +1661,16 @@ procedure GetSystemInformation(
 {$ENDIF}
 
 function  GetTimeMS:TTimeMS;
-begin {returns a time measured in milliseconds; the base doesn't matter, the time is only used in relative calculations}
+var hundredNanoSec:UInt64;
+begin
+{returns a time measured in hundred nanoseconds}
+{originally returned in milliseconds}
+{the base doesn't matter, the time is only used in relative calculations}
+{unlike GetTickCount64, QueryUnbiasedInterruptTime does not include
+{time the system spends in sleep or hibernation}
 {$IFDEF WINDOWS}
-  Result:=GetTickCount64; {Windows function}
+  QueryUnbiasedInterruptTime(hundredNanosec);
+  Result := hundredNanoSec;
 {$ELSE}
   Result:=0;            {no timing}
 {$ENDIF}
@@ -1795,13 +1804,13 @@ end;
 
 function  CalculateElapsedTimeS(StartTimeMS__,StopTimeMS__:TTimeMS):TTimeMS;
 begin
-  Result:=(CalculateElapsedTimeMS(StartTimeMS__,StopTimeMS__)+500) div 1000
+  Result:=(CalculateElapsedTimeMS(StartTimeMS__,StopTimeMS__)+500) div HUNDRED_NANOSECONDS;
 end;
 
 function  ConvertElapsedTimeSMS(StartTimeMS__,StopTimeMS__:TTimeMS):String;
 var AResult:ShortString;
 begin
-  Str(CalculateElapsedTimeMS(StartTimeMS__,StopTimeMS__)/1000.0:1:3,AResult);
+  Str(CalculateElapsedTimeMS(StartTimeMS__,StopTimeMS__)/Double(HUNDRED_NANOSECONDS):1:3,AResult);
   Result:=String(AResult);
 end;
 
@@ -2696,7 +2705,7 @@ begin {a simple and not fool-proof implementation}
                   end;
                   Result := MyStrToUInt64(s,TimeLimitNumber);
                   if Result then begin
-                     mScale := mScale * 1000; // to milliseconds
+                     mScale := mScale * HUNDRED_NANOSECONDS;
 
                      if TimeLimitNumber <= ( High(TimeLimitMS__) div mScale ) then
                       // if not overflow
@@ -3192,8 +3201,8 @@ begin {$I-}
              else    Writeln(F,'Optimize: Pushes');
 
      if Solver.SearchLimits.TimeLimitMS<>High(Solver.SearchLimits.TimeLimitMS) then begin
-        UnsignedInteger32:=UInt32(Solver.SearchLimits.TimeLimitMS) div 1000;
-        if UnsignedInteger32<UInt32(High(Solver.SearchLimits.TimeLimitMS)) div 1000 then begin
+        UnsignedInteger32:=UInt32(Solver.SearchLimits.TimeLimitMS) div HUNDRED_NANOSECONDS;
+        if UnsignedInteger32<UInt32(High(Solver.SearchLimits.TimeLimitMS)) div HUNDRED_NANOSECONDS then begin
            Write(F,'Maximum search time: ',UnsignedInteger32,' second');
            if   UnsignedInteger32<>1 then Writeln(F,'s') {plural, i.e., 'seconds'}
            else Writeln(F);
@@ -3331,7 +3340,7 @@ begin {$I-}
        else Write(F,GeneratedMovesCount:13);
        i:=InitializationTimeMS+SolverTimeMS+OptimizerTimeMS;
        if   i>=500 then begin
-            i:=(i+500) div 1000;
+            i:=(i+500) div HUNDRED_NANOSECONDS;
             Write(F,i:10);
             end
        else Write(F,'':10);
@@ -3378,7 +3387,7 @@ begin {$I-}
 
        i:=InitializationTimeMS+SolverTimeMS+OptimizerTimeMS;
        if i>=500 then begin
-          i:=(i+500) div 1000;
+          i:=(i+500) div HUNDRED_NANOSECONDS;
           Write(F,i:8);
 
           {$IFDEF DEFINE CONSOLE_APPLICATION}
