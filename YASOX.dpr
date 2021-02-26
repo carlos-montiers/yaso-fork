@@ -121,8 +121,10 @@ You should have received a copy of the GNU General Public License along with thi
 {$ENDIF}
 
   uses
-  SysUtils,
-  System.StrUtils
+  SysUtils
+{$IFDEF DELPHI}
+  ,System.StrUtils
+{$ENDIF}
 {$IFDEF WINDOWS}
   , Windows;
   function GetConsoleWindow: HWND; stdcall; external kernel32 name 'GetConsoleWindow';
