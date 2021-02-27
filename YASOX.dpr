@@ -2598,7 +2598,7 @@ begin {a simple and not fool-proof implementation}
      Result:=(Length(s)>=2) and ((s[1]=HYPHEN) or (s[1]=SLASH));
      if Result then
         p:= LowerCase(Copy(s,2,20));
-        case LoCase(p[1]) of
+        case p[1] of
 
           (*'b':
           if CompareStr('backwardsearchlimit', p) = 0 then begin
