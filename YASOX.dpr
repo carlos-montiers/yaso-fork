@@ -2683,16 +2683,17 @@ begin {a simple and not fool-proof implementation}
                 modifier:= LowerCase(RightStr(s, 1));
                 if modifier <> '' then begin
                   case modifier[1] of
+                    's': mScale := 1;
                     'm': mScale := 60;
                     'h': mScale := 3600;
                     'd': mScale := 3600 * 24;
                     'w': mScale := 3600 * 24 * 7;
-                    '0'..'9': mScale := mScale;
+                    '0'..'9': modifier := '';
                     else Result := False;
                   end
                 end;
                 if Result then begin
-                  if mScale <> 1 then begin
+                  if modifier <> '' then begin
                     // remove the modifier from s
                     SetLength(s,Length(s)-1);
                   end;
