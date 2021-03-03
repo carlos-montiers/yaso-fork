@@ -1775,7 +1775,7 @@ function  Optimize(ThreadIndex__:Integer):Boolean; forward;
 {$IFNDEF PLUGIN_MODULE} {if the module is compiled as a plugin (a dll), then 'OptimizeGame' is declared in the interface section}
   function  OptimizeGame(MovesAsTextBufferByteSize__:Integer; MovesAsText__:PChar):Boolean; forward;
 {$ENDIF}
-function  ReplayGame(const Moves__:String):Boolean; forward;
+function  ReplayGame(Moves__:String):Boolean; forward;
 function  SaveLevelToFile(const FileName__,LevelName__:String):Boolean; forward;
 //procedure ShowBoxDistanceToAllSquares(const Distances__:TBoardOfIntegers); forward;
 procedure SquareToColRow(Square__:Integer; var Col__,Row__:Integer); forward;
@@ -10795,7 +10795,7 @@ begin // ReduceBoxChanges; precondition: the history contains the game to be opt
 end; // ReduceBoxChanges
 *)
 
-function  ReplayGame(const Moves__:String):Boolean;
+function  ReplayGame(Moves__:String):Boolean;
 var {$IFDEF CONSOLE_APPLICATION}
       a,b,
     {$ENDIF}
@@ -10816,6 +10816,14 @@ begin {replays a game from a string; mostly used for testing that deadlock sets 
           //Write(Game.OriginalSolutionMoveCount,SLASH,Game.OriginalSolutionPushCount);
           //Readln;
           SquareNo:=Game.PlayerPos+Game.SquareOffsetForward[Direction];
+
+          // Support lurd in lowercase or uppercase
+          if (Game.Board[SquareNo] and BOX)<>0 then {IsABoxSquare}
+            Ch := UpCase(Ch)
+          else
+            Ch := LoCase(Ch);
+          Moves__[i] := Ch;
+
           if Ch=LoCase(Ch) then begin {'LoCase': a player move as opposed to a box push}
              Inc(Game.OriginalSolutionMoveCount);
              if Game.OriginalSolutionMoveCount>Game.TubeFillingMoveCount then begin
