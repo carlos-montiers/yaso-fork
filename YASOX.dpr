@@ -10829,7 +10829,10 @@ begin {replays a game from a string; mostly used for testing that deadlock sets 
              if Game.OriginalSolutionMoveCount>Game.TubeFillingMoveCount then begin
                 if   (Game.Board[SquareNo] and (WALL+BOX))=0 then
                      MovePlayer(SquareNo)
-                else Result:=False;
+                else begin
+                   Dec(i); {don't try to undo current move}
+                   Result:=False;
+                   end;
                 end;
              end
           else if Game.OriginalSolutionPushCount<Game.TubeFillingPushCount then begin
