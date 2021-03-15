@@ -5713,7 +5713,7 @@ begin {calculates - for all squares on the (empty) board - the distance to the n
      otherwise, this is not guaranteed for isolated boxes when the player's
      starting position is taken into account
     }
-    for BoxNo:=FirstBoxNo__ to LastBoxNo__ do Distances__[StartBoxPos[BoxNo]]:=0;
+    for BoxNo:=FirstBoxNo__ to LastBoxNo__ do Distances__[BoxPos[BoxNo]]:=0;
 
     for BoxNo:=1 to Game.BoxCount do Inc(Board[BoxPos[BoxNo]],BOX); {put all boxes back on the board}
     PlayerPos:=OldPlayerPosition; {restore the player position}
@@ -5819,9 +5819,9 @@ end; {CalculateDistanceToNearestGoalForAllSquares}
 
 procedure CalculateBoxReachableSquaresForAllBoxes;
 var Square:Integer; Distances:TBoardOfIntegers;
-begin
+begin {note that the player's start position does matter, but otherwise each box is calculated individually with all other boxes removed from the board}
   with Game do begin
-    CalculateDistanceToNearestBoxStartPositionForAllSquares(1,BoxCount,False,Distances);
+    CalculateDistanceToNearestBoxStartPositionForAllSquares(1,BoxCount,True,Distances);
     {ShowBoxDistanceToAllSquares(Distances); Readln;}
 
     for Square:=0 to BoardSize do {for each square...}
