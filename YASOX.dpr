@@ -5713,7 +5713,7 @@ begin {calculates - for all squares on the (empty) board - the distance to the n
      otherwise, this is not guaranteed for isolated boxes when the player's
      starting position is taken into account
     }
-    for BoxNo:=FirstBoxNo__ to LastBoxNo__ do Distances__[BoxPos[BoxNo]]:=0;
+    for BoxNo:=FirstBoxNo__ to LastBoxNo__ do Distances__[StartBoxPos[BoxNo]]:=0;
 
     for BoxNo:=1 to Game.BoxCount do Inc(Board[BoxPos[BoxNo]],BOX); {put all boxes back on the board}
     PlayerPos:=OldPlayerPosition; {restore the player position}
